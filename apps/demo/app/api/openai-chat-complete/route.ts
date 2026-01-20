@@ -44,16 +44,37 @@ ${KNOWLEDGE_BASE}
 Answer courteously and professionally.
 `;
 
+import { checkRateLimit, isValidLanguage, sanitizeInput } from "../../../lib/security";
+import { NextRequest } from "next/server";
+
 export async function POST(request: Request) {
+  // 1. Security: Rate Limiting
+  // Cast to NextRequest to get headers for IP
+  const req = request as unknown as NextRequest;
+  if (!checkRateLimit(req, 20, 60 * 1000)) { // 20 requests per minute
+    return new Response(JSON.stringify({ error: "Too many requests. Please slow down." }), { status: 429 });
+  }
+
   try {
     const body = await request.json();
-    const {
+    let {
       message,
       model = "gpt-4o-mini",
-      // Allow client to override system prompt ONLY if they really want to, but default to our strict one
       system_prompt,
-      language, // Extract language requirement
+      language,
     } = body;
+
+    // 2. Security: Input Validation & Sanitization
+    if (language && !isValidLanguage(language)) {
+      console.warn(`SECURITY: Blocked invalid language injection attempt: "${language}"`);
+      language = ""; // Fallback to safe default (English) or ignore
+    }
+
+    message = sanitizeInput(message || "");
+    if (message.length > 1000) {
+      return new Response(JSON.stringify({ error: "Message too long (max 1000 chars)" }), { status: 400 });
+    }
+
 
     console.log(`DEBUG: API received language: "${language}"`);
 

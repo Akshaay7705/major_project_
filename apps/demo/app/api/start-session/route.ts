@@ -7,12 +7,27 @@ import {
   LANGUAGE,
 } from "../secrets";
 
+import { checkRateLimit, isValidLanguage } from "../../../lib/security";
+import { NextRequest } from "next/server";
+
 export async function POST(req: Request) {
+  // 1. Security: Strict Rate Limit for Session Creation (Expensive)
+  const nextReq = req as unknown as NextRequest;
+  if (!checkRateLimit(nextReq, 5, 60 * 1000)) { // 5 sessions per minute per IP
+    return new Response(JSON.stringify({ error: "Rate limit exceeded. Try again later." }), { status: 429 });
+  }
+
   let session_token = "";
   let session_id = "";
   try {
     const body = await req.json().catch(() => ({}));
-    const language = body.language || LANGUAGE;
+    let language = body.language || LANGUAGE;
+
+    // 2. Security: Validate inputs before external API call
+    if (language && !isValidLanguage(language)) {
+      console.warn(`SECURITY: Blocked invalid language in start-session: "${language}"`);
+      language = LANGUAGE; // Fallback
+    }
 
     const res = await fetch(`${API_URL}/v1/sessions/token`, {
       method: "POST",
