@@ -70,42 +70,33 @@ export async function POST(request: Request) {
       language = ""; // Fallback to safe default (English) or ignore
     }
 
-    message = sanitizeInput(message || "");
-    if (message.length > 1000) {
+    // Check RAW length first to prevent payload attacks
+    if (message && message.length > 1000) {
       return new Response(JSON.stringify({ error: "Message too long (max 1000 chars)" }), { status: 400 });
     }
 
+    message = sanitizeInput(message || "");
 
     console.log(`DEBUG: API received language: "${language}"`);
 
     // Append language enforcement to the system prompt
-    // This ensures the avatar speaks the selected language even if the user speaks something else.
     const languageInstruction = language ? `\n\nCRITICAL INSTRUCTION: The user has selected the language: "${language}". Regardless of the language the user speaks (even if they speak English), you MUST output your final response designated for the user ONLY in "${language}". Translate the information from the Knowledge Base into "${language}". Do NOT reply in English unless the selected language is explicitly "English".` : "";
 
     const effectiveSystemPrompt = SYSTEM_PROMPT + languageInstruction;
-
-    // Merge strictly
     const finalSystemPrompt = system_prompt ? `${effectiveSystemPrompt}\n\nAdditional Instructions:\n${system_prompt}` : effectiveSystemPrompt;
 
     if (!message) {
       return new Response(JSON.stringify({ error: "message is required" }), {
         status: 400,
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
       });
     }
 
     if (!OPENAI_API_KEY) {
-      return new Response(
-        JSON.stringify({ error: "OpenAI API key not configured" }),
-        {
-          status: 500,
-          headers: {
-            "Content-Type": "application/json",
-          },
-        },
-      );
+      return new Response(JSON.stringify({ error: "OpenAI API key not configured" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     // Call OpenAI API
@@ -127,18 +118,10 @@ export async function POST(request: Request) {
     if (!res.ok) {
       const errorData = await res.text();
       console.error("OpenAI API error:", errorData);
-      return new Response(
-        JSON.stringify({
-          error: "Failed to generate response",
-          details: errorData,
-        }),
-        {
-          status: res.status,
-          headers: {
-            "Content-Type": "application/json",
-          },
-        },
-      );
+      return new Response(JSON.stringify({ error: "Failed to generate response", details: errorData }), {
+        status: res.status,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     const data = await res.json();
@@ -146,20 +129,13 @@ export async function POST(request: Request) {
 
     return new Response(JSON.stringify({ response }), {
       status: 200,
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
     console.error("Error generating response:", error);
-    return new Response(
-      JSON.stringify({ error: "Failed to generate response" }),
-      {
-        status: 500,
-        headers: {
-          "Content-Type": "application/json",
-        },
-      },
-    );
+    return new Response(JSON.stringify({ error: "Failed to generate response" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 }
