@@ -12,9 +12,11 @@ import { LiveAvatarSessionMessage } from "./types";
 
 // Client-side API URL configuration
 // If you need to override this, set NEXT_PUBLIC_HEYGEN_API_URL in .env.local
-const API_URL = typeof window !== 'undefined' && (window as any).NEXT_PUBLIC_HEYGEN_API_URL
-  || process.env.NEXT_PUBLIC_HEYGEN_API_URL
-  || "https://api.liveavatar.com";
+const API_URL =
+  (typeof window !== "undefined" &&
+    (window as any).NEXT_PUBLIC_HEYGEN_API_URL) ||
+  process.env.NEXT_PUBLIC_HEYGEN_API_URL ||
+  "https://api.liveavatar.com";
 
 type LiveAvatarContextProps = {
   sessionRef: React.RefObject<LiveAvatarSession>;
@@ -140,7 +142,7 @@ const useTalkingState = (sessionRef: React.RefObject<LiveAvatarSession>) => {
 const useVoiceTranscription = (
   sessionRef: React.RefObject<LiveAvatarSession>,
   onUserTranscription?: (text: string) => void,
-  onAvatarTranscription?: (text: string) => void
+  onAvatarTranscription?: (text: string) => void,
 ) => {
   useEffect(() => {
     const session = sessionRef.current;
@@ -167,15 +169,24 @@ const useVoiceTranscription = (
     }
 
     if (onAvatarTranscription) {
-      session.on(AgentEventsEnum.AVATAR_TRANSCRIPTION, handleAvatarTranscription);
+      session.on(
+        AgentEventsEnum.AVATAR_TRANSCRIPTION,
+        handleAvatarTranscription,
+      );
     }
 
     return () => {
       if (onUserTranscription) {
-        session.off(AgentEventsEnum.USER_TRANSCRIPTION, handleUserTranscription);
+        session.off(
+          AgentEventsEnum.USER_TRANSCRIPTION,
+          handleUserTranscription,
+        );
       }
       if (onAvatarTranscription) {
-        session.off(AgentEventsEnum.AVATAR_TRANSCRIPTION, handleAvatarTranscription);
+        session.off(
+          AgentEventsEnum.AVATAR_TRANSCRIPTION,
+          handleAvatarTranscription,
+        );
       }
     };
   }, [sessionRef, onUserTranscription, onAvatarTranscription]);

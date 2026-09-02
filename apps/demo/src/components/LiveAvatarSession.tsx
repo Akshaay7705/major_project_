@@ -10,7 +10,17 @@ import {
 import { useLiveAvatarContext } from "../liveavatar/context";
 import { SessionState, AgentEventsEnum } from "@heygen/liveavatar-web-sdk";
 import { useAvatarActions } from "../liveavatar/useAvatarActions";
-import { Mic, MicOff, MessageSquare, Power, Square, X, ChevronLeft, ChevronRight, Send } from "lucide-react";
+import {
+  Mic,
+  MicOff,
+  MessageSquare,
+  Power,
+  Square,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  Send,
+} from "lucide-react";
 
 const SidebarButton: React.FC<{
   onClick: () => void;
@@ -28,11 +38,12 @@ const SidebarButton: React.FC<{
         className={`
           flex items-center justify-center
           w-9 h-9 md:w-14 md:h-14 rounded-full backdrop-blur-md transition-all duration-200 shadow-lg border
-          ${variant === "danger"
-            ? "bg-red-500/20 border-red-500/30 hover:bg-red-500/40 text-red-50"
-            : active
-              ? "bg-white/30 border-white/40 text-white"
-              : "bg-black/20 border-white/10 text-white/80 hover:bg-black/40 hover:text-white"
+          ${
+            variant === "danger"
+              ? "bg-red-500/20 border-red-500/30 hover:bg-red-500/40 text-red-50"
+              : active
+                ? "bg-white/30 border-white/40 text-white"
+                : "bg-black/20 border-white/10 text-white/80 hover:bg-black/40 hover:text-white"
           }
           ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
         `}
@@ -47,13 +58,25 @@ const LiveAvatarSessionComponent: React.FC<{
   mode: "FULL" | "CUSTOM";
   language: string;
   onSessionStopped: () => void;
-  voiceCommandHandlerRef: React.MutableRefObject<((text: string) => void) | null>;
-  avatarTranscriptHandlerRef?: React.MutableRefObject<((text: string) => void) | null>;
-}> = ({ mode, language, onSessionStopped, voiceCommandHandlerRef, avatarTranscriptHandlerRef }) => {
+  voiceCommandHandlerRef: React.MutableRefObject<
+    ((text: string) => void) | null
+  >;
+  avatarTranscriptHandlerRef?: React.MutableRefObject<
+    ((text: string) => void) | null
+  >;
+}> = ({
+  mode,
+  language,
+  onSessionStopped,
+  voiceCommandHandlerRef,
+  avatarTranscriptHandlerRef,
+}) => {
   const [showTranscript, setShowTranscript] = useState(true);
   const [isOpen, setIsOpen] = useState(true); // Default sidebar open
   const [showChatInput, setShowChatInput] = useState(false);
-  const [chatMessages, setChatMessages] = useState<{ sender: "User" | "Agent"; text: string }[]>([]);
+  const [chatMessages, setChatMessages] = useState<
+    { sender: "User" | "Agent"; text: string }[]
+  >([]);
   const [inputMessage, setInputMessage] = useState("");
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
@@ -84,7 +107,8 @@ const LiveAvatarSessionComponent: React.FC<{
     unmute,
   } = useVoiceChat();
 
-  const { interrupt, startListening, stopListening, repeat } = useAvatarActions(mode);
+  const { interrupt, startListening, stopListening, repeat } =
+    useAvatarActions(mode);
 
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -102,7 +126,11 @@ const LiveAvatarSessionComponent: React.FC<{
   }, [attachElement, isStreamReady]);
 
   useEffect(() => {
-    if (sessionState === SessionState.INACTIVE && mode === "FULL" && !isSessionStarting.current) {
+    if (
+      sessionState === SessionState.INACTIVE &&
+      mode === "FULL" &&
+      !isSessionStarting.current
+    ) {
       isSessionStarting.current = true;
       console.log("DEBUG: Auto-starting session...");
       startSession().catch((e) => {
@@ -115,24 +143,35 @@ const LiveAvatarSessionComponent: React.FC<{
     }
   }, [startSession, sessionState, mode]);
 
-  // Auto-start voice chat for FULL mode
+  const isGreetingSpoken = useRef(false);
+
+  // Intercept HeyGen's built-in greeting and replace with NIE-Bot greeting
   useEffect(() => {
-    if (
-      mode === "FULL" &&
-      !isActive &&
-      !isLoading &&
-      sessionState === SessionState.CONNECTED &&
-      !isUserTalking &&
-      !isAvatarTalking
-    ) {
-      // Delay starting voice chat by 2 seconds
+    if (sessionState === SessionState.CONNECTED && !isGreetingSpoken.current) {
+      isGreetingSpoken.current = true;
+      const greetingText =
+        "Welcome to The National Institute of Engineering, Mysuru! I am NIE-Bot, your virtual assistant. How can I assist you with admissions, courses, or campus life today?";
+      setChatMessages([{ sender: "Agent", text: greetingText }]);
+
+      // Step 1: Interrupt HeyGen's auto-play business greeting
+      try {
+        interrupt();
+      } catch (_) {}
+
+      // Step 2: After interrupt settles, speak NIE greeting
       const timer = setTimeout(() => {
-        start();
-      }, 5000);
+        try {
+          const result = repeat(greetingText);
+          if (result && typeof result.catch === "function")
+            result.catch(() => {});
+        } catch (_) {}
+      }, 1200);
       return () => clearTimeout(timer);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, sessionState]);
+    if (sessionState === SessionState.DISCONNECTED) {
+      isGreetingSpoken.current = false;
+    }
+  }, [sessionState, interrupt, repeat]);
 
   // Capture all avatar speech (including greetings)
   useEffect(() => {
@@ -162,16 +201,18 @@ const LiveAvatarSessionComponent: React.FC<{
 
   // Antigravity Fix: Auto-mute mic when avatar is talking to prevent echo (self-hearing)
   useEffect(() => {
-    if (mode === "FULL" && sessionState === SessionState.CONNECTED) {
+    if (
+      mode === "FULL" &&
+      sessionState === SessionState.CONNECTED &&
+      isActive
+    ) {
       if (isAvatarTalking) {
-        // console.log("DEBUG: Avatar talking - Muting mic");
-        mute().catch(() => { });
+        mute().catch(() => {});
       } else {
-        // console.log("DEBUG: Avatar stopped - Unmuting mic");
-        unmute().catch(() => { });
+        unmute().catch(() => {});
       }
     }
-  }, [isAvatarTalking, mode, sessionState, mute, unmute]);
+  }, [isAvatarTalking, mode, sessionState, isActive, mute, unmute]);
 
   // Auto-scroll to bottom of transcript
   useEffect(() => {
@@ -181,109 +222,258 @@ const LiveAvatarSessionComponent: React.FC<{
   const [isProcessing, setIsProcessing] = useState(false);
   const processingRef = useRef(false); // Ref for synchronous locking to prevent races
 
+  // --- Meeting Scheduling Flow ---
+  const meetingFlowRef = useRef<null | "awaiting_name" | "awaiting_email">(
+    null,
+  );
+  const pendingMeetingName = useRef<string>("");
+
+  const SCHEDULE_TRIGGERS = [
+    "schedule",
+    "book",
+    "appointment",
+    "meet with",
+    "talk to admissions",
+    "visit",
+    "counsell",
+    "consult",
+    "meet someone",
+    "speak to someone",
+  ];
+
+  function isScheduleIntent(text: string) {
+    const lower = text.toLowerCase();
+    return SCHEDULE_TRIGGERS.some((t) => lower.includes(t));
+  }
+
   // Handle voice commands from SDK
-  const handleVoiceCommand = useCallback(async (userText: string) => {
-    console.log("DEBUG: Voice Interaction Triggered:", userText, "isProcessing:", isProcessing);
-    const now = Date.now();
+  const handleVoiceCommand = useCallback(
+    async (userText: string) => {
+      console.log(
+        "DEBUG: Voice Interaction Triggered:",
+        userText,
+        "isProcessing:",
+        isProcessing,
+      );
+      const now = Date.now();
 
-    // 1. Basic Validation
-    if (!userText || !userText.trim()) return;
+      // 1. Basic Validation
+      if (!userText || !userText.trim()) return;
 
-    // 2. State-based Lock (Ref for immediate race protection)
-    if (processingRef.current) return;
+      // 2. State-based Lock (Ref for immediate race protection)
+      if (processingRef.current) return;
 
-    // 3. Strict Debounce & Rate Limiting (Ref-based)
-    // Normalize text (remove punctuation, lowercase) for comparison
-    const normalize = (t: string) => t.toLowerCase().replace(/[^\w\s]|_/g, "").trim();
-    const normalizedUserText = normalize(userText);
-    const normalizedLastText = normalize(lastProcessedText.current);
+      // 3. Strict Debounce & Rate Limiting (Ref-based)
+      // Normalize text (remove punctuation, lowercase) for comparison
+      const normalize = (t: string) =>
+        t
+          .toLowerCase()
+          .replace(/[^\w\s]|_/g, "")
+          .trim();
+      const normalizedUserText = normalize(userText);
+      const normalizedLastText = normalize(lastProcessedText.current);
 
-    // Prevent duplicate commands (fuzzy match) within 3 seconds
-    if (normalizedUserText === normalizedLastText && now - lastProcessedTime.current < 3000) {
-      console.log("DEBUG: Ignoring duplicate voice command:", userText);
-      return;
-    }
-    // Prevent ANY command within 2 seconds (Rate Limit)
-    if (now - lastProcessedTime.current < 2000) {
-      console.log("DEBUG: Ignoring rapid voice command (rate limit):", userText);
-      return;
-    }
-
-    // Update Refs
-    lastProcessedText.current = userText;
-    lastProcessedTime.current = now;
-
-    setIsProcessing(true);
-    processingRef.current = true;
-
-    // Add user's voice command to transcript (prevent duplicates)
-    setChatMessages((prev) => {
-      const lastMsg = prev[prev.length - 1];
-      if (lastMsg && lastMsg.sender === "User" && lastMsg.text === userText) {
-        return prev;
+      // Prevent duplicate commands (fuzzy match) within 3 seconds
+      if (
+        normalizedUserText === normalizedLastText &&
+        now - lastProcessedTime.current < 3000
+      ) {
+        console.log("DEBUG: Ignoring duplicate voice command:", userText);
+        return;
       }
-      return [...prev, { sender: "User", text: userText }];
-    });
-
-    const languageNames: Record<string, string> = {
-      en: "English",
-      es: "Spanish",
-      fr: "French",
-      de: "German",
-      it: "Italian",
-      pt: "Portuguese",
-      hi: "Hindi",
-      ja: "Japanese",
-      ko: "Korean",
-      zh: "Chinese",
-    };
-    const languageFullName = languageNames[language] || language;
-
-    console.log("DEBUG: Sending request with language:", languageFullName);
-
-    try {
-      // Validate response through knowledge bank
-      const response = await fetch("/api/openai-chat-complete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userText, language: languageFullName }),
-      });
-
-      if (!response.ok) {
-        if (response.status === 429) {
-          console.warn("DEBUG: Rate limit hit (429)");
-        }
-        throw new Error(`API call failed: ${response.status}`);
+      // Prevent ANY command within 2 seconds (Rate Limit)
+      if (now - lastProcessedTime.current < 2000) {
+        console.log(
+          "DEBUG: Ignoring rapid voice command (rate limit):",
+          userText,
+        );
+        return;
       }
 
-      const data = await response.json();
-      const agentResponse = data.response;
+      // Update Refs
+      lastProcessedText.current = userText;
+      lastProcessedTime.current = now;
 
-      // Add validated response to transcript (prevent duplicates)
+      setIsProcessing(true);
+      processingRef.current = true;
+
+      // Add user's voice command to transcript (prevent duplicates)
       setChatMessages((prev) => {
         const lastMsg = prev[prev.length - 1];
-        if (lastMsg && lastMsg.sender === "Agent" && lastMsg.text === agentResponse) {
+        if (lastMsg && lastMsg.sender === "User" && lastMsg.text === userText) {
           return prev;
         }
-        return [...prev, { sender: "Agent", text: agentResponse }];
+        return [...prev, { sender: "User", text: userText }];
       });
 
-      // Make avatar speak the validated response
-      if (repeat) {
-        console.log("DEBUG: Calling repeat with:", agentResponse.substring(0, 50) + "...");
-        await repeat(agentResponse);
+      try {
+        // ---- MEETING SCHEDULING FLOW ----
+        if (meetingFlowRef.current === "awaiting_name") {
+          pendingMeetingName.current = userText.trim();
+          meetingFlowRef.current = "awaiting_email";
+          const prompt = `Thank you, ${pendingMeetingName.current}! Could you please share your email address so I can send you the meeting invite?`;
+          setChatMessages((prev) => [
+            ...prev,
+            { sender: "Agent", text: prompt },
+          ]);
+          try {
+            const r = repeat(prompt);
+            if (r && typeof r.catch === "function") r.catch(() => {});
+          } catch (_) {}
+          return;
+        }
+
+        if (meetingFlowRef.current === "awaiting_email") {
+          const userEmail = userText.trim().replace(/\s+/g, "").toLowerCase();
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!emailRegex.test(userEmail)) {
+            const prompt =
+              "I didn't catch a valid email address. Could you please say your email again?";
+            setChatMessages((prev) => [
+              ...prev,
+              { sender: "Agent", text: prompt },
+            ]);
+            try {
+              const r = repeat(prompt);
+              if (r && typeof r.catch === "function") r.catch(() => {});
+            } catch (_) {}
+            return;
+          }
+
+          meetingFlowRef.current = null;
+          const bookingMsg =
+            "Please hold on while I schedule your meeting with the NIE Mysuru Admissions Office...";
+          setChatMessages((prev) => [
+            ...prev,
+            { sender: "Agent", text: bookingMsg },
+          ]);
+          try {
+            const r = repeat(bookingMsg);
+            if (r && typeof r.catch === "function") r.catch(() => {});
+          } catch (_) {}
+
+          const schedRes = await fetch("/api/schedule-meeting", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              userName: pendingMeetingName.current,
+              userEmail,
+            }),
+          });
+
+          const schedData = await schedRes.json();
+          const avatarResponse =
+            schedData.avatarResponse ||
+            (schedData.error
+              ? `Sorry, I couldn't schedule the meeting: ${schedData.error}`
+              : "Your meeting has been scheduled!");
+          setChatMessages((prev) => [
+            ...prev,
+            { sender: "Agent", text: avatarResponse },
+          ]);
+          try {
+            const r = repeat(avatarResponse);
+            if (r && typeof r.catch === "function") r.catch(() => {});
+          } catch (_) {}
+          return;
+        }
+
+        // Detect scheduling intent from user's voice
+        if (isScheduleIntent(userText)) {
+          meetingFlowRef.current = "awaiting_name";
+          const prompt =
+            "Of course! I'd be happy to schedule a meeting with the NIE Mysuru Admissions Office for you. Could you please tell me your full name?";
+          setChatMessages((prev) => [
+            ...prev,
+            { sender: "Agent", text: prompt },
+          ]);
+          try {
+            const r = repeat(prompt);
+            if (r && typeof r.catch === "function") r.catch(() => {});
+          } catch (_) {}
+          return;
+        }
+        // ---- END MEETING FLOW ----
+
+        const languageNames: Record<string, string> = {
+          en: "English",
+          es: "Spanish",
+          fr: "French",
+          de: "German",
+          it: "Italian",
+          pt: "Portuguese",
+          hi: "Hindi",
+          ja: "Japanese",
+          ko: "Korean",
+          zh: "Chinese",
+        };
+        const languageFullName = languageNames[language] || language;
+        console.log("DEBUG: Sending request with language:", languageFullName);
+
+        // Validate response through knowledge bank
+        const response = await fetch("/api/openai-chat-complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: userText,
+            language: languageFullName,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorJson = await response.json().catch(() => ({}));
+          const errorMsg =
+            errorJson.error || `API call failed: ${response.status}`;
+          console.error(
+            `DEBUG: OpenAI Chat API error (${response.status}):`,
+            errorMsg,
+          );
+          setChatMessages((prev) => [
+            ...prev,
+            {
+              sender: "Agent",
+              text: `⚠️ API Error (${response.status}): ${errorMsg}`,
+            },
+          ]);
+          return;
+        }
+
+        const data = await response.json();
+        const agentResponse = data.response;
+
+        // Add validated response to transcript (prevent duplicates)
+        setChatMessages((prev) => {
+          const lastMsg = prev[prev.length - 1];
+          if (
+            lastMsg &&
+            lastMsg.sender === "Agent" &&
+            lastMsg.text === agentResponse
+          ) {
+            return prev;
+          }
+          return [...prev, { sender: "Agent", text: agentResponse }];
+        });
+
+        // Make avatar speak the validated response
+        if (repeat) {
+          console.log(
+            "DEBUG: Calling repeat with:",
+            agentResponse.substring(0, 50) + "...",
+          );
+          await repeat(agentResponse);
+        }
+      } catch (error) {
+        console.error("DEBUG: Failed to process voice command:", error);
+      } finally {
+        // Small cooldown before allowing next processing state (UI feedback)
+        setTimeout(() => {
+          setIsProcessing(false);
+          processingRef.current = false;
+        }, 500);
       }
-    } catch (error) {
-      console.error("DEBUG: Failed to process voice command:", error);
-    } finally {
-      // Small cooldown before allowing next processing state (UI feedback)
-      // Small cooldown before allowing next processing state (UI feedback)
-      setTimeout(() => {
-        setIsProcessing(false);
-        processingRef.current = false;
-      }, 500);
-    }
-  }, [repeat, isProcessing, language]);
+    },
+    [repeat, isProcessing, language],
+  );
 
   // Connect voice command handler to ref
   useEffect(() => {
@@ -309,28 +499,128 @@ const LiveAvatarSessionComponent: React.FC<{
   const handleSendMessage = async () => {
     if (!inputMessage.trim()) return;
 
-    const messageToSend = inputMessage;
+    const messageToSend = inputMessage.trim();
     setInputMessage("");
-    setChatMessages((prev) => [...prev, { sender: "User", text: messageToSend }]);
+    setChatMessages((prev) => [
+      ...prev,
+      { sender: "User", text: messageToSend },
+    ]);
 
     try {
+      // Check meeting flow for typed messages
+      if (meetingFlowRef.current === "awaiting_name") {
+        pendingMeetingName.current = messageToSend;
+        meetingFlowRef.current = "awaiting_email";
+        const prompt = `Thank you, ${pendingMeetingName.current}! Could you please share your email address so I can send you the meeting invite?`;
+        setChatMessages((prev) => [...prev, { sender: "Agent", text: prompt }]);
+        try {
+          const r = repeat(prompt);
+          if (r && typeof r.catch === "function") r.catch(() => {});
+        } catch (_) {}
+        return;
+      }
+
+      if (meetingFlowRef.current === "awaiting_email") {
+        const userEmail = messageToSend.replace(/\s+/g, "").toLowerCase();
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(userEmail)) {
+          const prompt =
+            "Please enter a valid email address so I can send the invite.";
+          setChatMessages((prev) => [
+            ...prev,
+            { sender: "Agent", text: prompt },
+          ]);
+          try {
+            const r = repeat(prompt);
+            if (r && typeof r.catch === "function") r.catch(() => {});
+          } catch (_) {}
+          return;
+        }
+
+        meetingFlowRef.current = null;
+        const bookingMsg =
+          "Please hold on while I schedule your meeting with the NIE Mysuru Admissions Office...";
+        setChatMessages((prev) => [
+          ...prev,
+          { sender: "Agent", text: bookingMsg },
+        ]);
+        try {
+          const r = repeat(bookingMsg);
+          if (r && typeof r.catch === "function") r.catch(() => {});
+        } catch (_) {}
+
+        const schedRes = await fetch("/api/schedule-meeting", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userName: pendingMeetingName.current,
+            userEmail,
+          }),
+        });
+
+        const schedData = await schedRes.json();
+        const avatarResponse =
+          schedData.avatarResponse ||
+          (schedData.error
+            ? `Sorry, I couldn't schedule the meeting: ${schedData.error}`
+            : "Your meeting has been scheduled!");
+        setChatMessages((prev) => [
+          ...prev,
+          { sender: "Agent", text: avatarResponse },
+        ]);
+        try {
+          const r = repeat(avatarResponse);
+          if (r && typeof r.catch === "function") r.catch(() => {});
+        } catch (_) {}
+        return;
+      }
+
+      if (isScheduleIntent(messageToSend)) {
+        meetingFlowRef.current = "awaiting_name";
+        const prompt =
+          "Of course! I'd be happy to schedule a meeting with the NIE Mysuru Admissions Office for you. What is your full name?";
+        setChatMessages((prev) => [...prev, { sender: "Agent", text: prompt }]);
+        try {
+          const r = repeat(prompt);
+          if (r && typeof r.catch === "function") r.catch(() => {});
+        } catch (_) {}
+        return;
+      }
+
       const response = await fetch("/api/openai-chat-complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: messageToSend }),
       });
 
-      if (!response.ok) throw new Error("API call failed");
+      if (!response.ok) {
+        const errorJson = await response.json().catch(() => ({}));
+        const errorMsg =
+          errorJson.error || `API call failed (${response.status})`;
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            sender: "Agent",
+            text: `⚠️ API Error (${response.status}): ${errorMsg}`,
+          },
+        ]);
+        return;
+      }
 
       const data = await response.json();
       const agentResponse = data.response;
 
-      setChatMessages((prev) => [...prev, { sender: "Agent", text: agentResponse }]);
+      setChatMessages((prev) => [
+        ...prev,
+        { sender: "Agent", text: agentResponse },
+      ]);
 
       if (repeat) {
-        await repeat(agentResponse);
+        try {
+          const res = repeat(agentResponse);
+          if (res && typeof res.catch === "function") res.catch(() => {});
+        } catch (_) {}
       }
-
     } catch (error) {
       console.error("Failed to process message:", error);
     }
@@ -351,8 +641,11 @@ const LiveAvatarSessionComponent: React.FC<{
       {/* Connection Status Indicator */}
       <div className="absolute top-8 md:top-6 left-6 z-10 flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/20 backdrop-blur-md border border-white/10">
         <div
-          className={`w-2 h-2 rounded-full ${sessionState === SessionState.CONNECTED ? "bg-green-500 animate-pulse" : "bg-yellow-500"
-            }`}
+          className={`w-2 h-2 rounded-full ${
+            sessionState === SessionState.CONNECTED
+              ? "bg-green-500 animate-pulse"
+              : "bg-yellow-500"
+          }`}
         />
         <span className="text-xs font-medium text-white/80 uppercase tracking-wider">
           {sessionState}
@@ -366,7 +659,9 @@ const LiveAvatarSessionComponent: React.FC<{
           onClick={() => setIsOpen(!isOpen)}
           className="p-2 rounded-full bg-black/20 backdrop-blur-md border border-white/10 text-white/80 hover:bg-black/40 hover:text-white transition-all shadow-lg"
         >
-          <ChevronLeft className={`w-6 h-6 transition-transform duration-700 ease-in-out ${isOpen ? "rotate-180" : ""}`} />
+          <ChevronLeft
+            className={`w-6 h-6 transition-transform duration-700 ease-in-out ${isOpen ? "rotate-180" : ""}`}
+          />
         </button>
 
         {/* Collapsible Control Panel */}
@@ -378,10 +673,20 @@ const LiveAvatarSessionComponent: React.FC<{
         >
           <SidebarButton
             onClick={() => {
-              if (isActive) { stop(); } else { start(); }
+              if (isActive) {
+                stop();
+              } else {
+                start();
+              }
             }}
             active={isActive}
-            icon={isActive ? <Mic className="w-4 h-4 md:w-6 md:h-6" /> : <MicOff className="w-4 h-4 md:w-6 md:h-6" />}
+            icon={
+              isActive ? (
+                <Mic className="w-4 h-4 md:w-6 md:h-6" />
+              ) : (
+                <MicOff className="w-4 h-4 md:w-6 md:h-6" />
+              )
+            }
             label={isActive ? "Stop Listening" : "Start Listening"}
           />
           <SidebarButton
@@ -454,38 +759,46 @@ const LiveAvatarSessionComponent: React.FC<{
           flex flex-col justify-end gap-2 transition-all duration-500 ease-in-out z-20 
           ${showTranscript ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4 pointer-events-none"}
         `}
-        style={{ maskImage: 'linear-gradient(to bottom, transparent 0%, black 15%, black 100%)', WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 15%, black 100%)' }}
+        style={{
+          maskImage:
+            "linear-gradient(to bottom, transparent 0%, black 15%, black 100%)",
+          WebkitMaskImage:
+            "linear-gradient(to bottom, transparent 0%, black 15%, black 100%)",
+        }}
       >
         <div
           className="flex flex-col gap-2 max-h-[25vh] md:max-h-[200px] overflow-y-auto pb-1 pr-1 pt-4"
-          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+          style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
         >
-          {chatMessages.length === 0 ? null : (
-            chatMessages.map((msg, idx, arr) => {
-              const isLast = idx === arr.length - 1;
-              return (
-                <div
-                  key={idx}
-                  className={`
+          {chatMessages.length === 0
+            ? null
+            : chatMessages.map((msg, idx, arr) => {
+                const isLast = idx === arr.length - 1;
+                return (
+                  <div
+                    key={idx}
+                    className={`
                     transition-all duration-500 ease-out
                     ${msg.sender === "User" ? "text-right pl-6" : "text-left pr-6"}
                     ${isLast ? "opacity-100 scale-100" : "opacity-60 scale-95 hover:opacity-100"}
                   `}
-                >
-                  <div className={`
+                  >
+                    <div
+                      className={`
                     inline-block px-3 py-2 md:px-4 md:py-2.5 rounded-2xl text-xs md:text-sm leading-relaxed
-                    ${msg.sender === "User"
-                      ? "bg-black/40 text-white/90 border border-white/10 rounded-tr-sm backdrop-blur-md"
-                      : "bg-black/70 text-white border border-white/20 shadow-lg rounded-tl-sm backdrop-blur-xl"
+                    ${
+                      msg.sender === "User"
+                        ? "bg-black/40 text-white/90 border border-white/10 rounded-tr-sm backdrop-blur-md"
+                        : "bg-black/70 text-white border border-white/20 shadow-lg rounded-tl-sm backdrop-blur-xl"
                     }
                     transition-all duration-300
-                  `}>
-                    {msg.text}
+                  `}
+                    >
+                      {msg.text}
+                    </div>
                   </div>
-                </div>
-              );
-            })
-          )}
+                );
+              })}
           <div ref={transcriptEndRef} />
         </div>
       </div>

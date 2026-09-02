@@ -15,7 +15,7 @@ This folder contains the complete code for adding a live transcript feature to y
 
 2.  **Copy the new files**:
     Copy the files from this folder to their corresponding locations in your project:
-    
+
     ```bash
     cp transcript-feature/src/liveavatar/context.tsx apps/demo/src/liveavatar/context.tsx
     cp transcript-feature/src/components/LiveAvatarSession.tsx apps/demo/src/components/LiveAvatarSession.tsx

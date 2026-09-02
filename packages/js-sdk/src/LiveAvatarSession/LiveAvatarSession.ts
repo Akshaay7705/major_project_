@@ -461,20 +461,21 @@ export class LiveAvatarSession extends (EventEmitter as new () => TypedEmitter<
   }
 
   private sendCommandEvent(commandEvent: CommandEvent): void {
-    // Use WebSocket if available, otherwise use LiveKit data channel
-    if (
-      this._sessionEventSocket &&
-      this._sessionEventSocket.readyState === WebSocket.OPEN
-    ) {
-      this.sendCommandEventToWebSocket(commandEvent);
-    } else if (this.room.state === "connected") {
+    // Always publish to LiveKit data channel for reliable avatar speech synthesis
+    if (this.room && this.room.state === "connected") {
       const data = new TextEncoder().encode(JSON.stringify(commandEvent));
       this.room.localParticipant.publishData(data, {
         reliable: true,
         topic: LIVEKIT_COMMAND_CHANNEL_TOPIC,
       });
-    } else {
-      console.warn("No active connection to send command event");
+    }
+
+    // Also send to WebSocket if available
+    if (
+      this._sessionEventSocket &&
+      this._sessionEventSocket.readyState === WebSocket.OPEN
+    ) {
+      this.sendCommandEventToWebSocket(commandEvent);
     }
   }
 
@@ -519,6 +520,16 @@ export class LiveAvatarSession extends (EventEmitter as new () => TypedEmitter<
           JSON.stringify({
             type: "agent.speak_end",
             event_id: event_id,
+          }),
+        );
+        return;
+      case CommandEventsEnum.AVATAR_SPEAK_TEXT:
+      case CommandEventsEnum.AVATAR_SPEAK_RESPONSE:
+        this._sessionEventSocket.send(
+          JSON.stringify({
+            type: "agent.speak",
+            event_id: event_id,
+            text: (commandEvent as any).text,
           }),
         );
         return;

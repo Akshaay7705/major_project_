@@ -66,46 +66,40 @@ export const LiveAvatarDemo = () => {
   };
 
   return (
-
     <div className="w-screen h-screen flex flex-col items-center justify-center gap-4 bg-neutral-900 overflow-hidden">
       {!sessionToken ? (
         <div
           onClick={handleStart}
           className="relative w-full h-full cursor-pointer group"
         >
-          {/* Background Video - Desktop / Laptop (Landscape) */}
+          {/* Background Video - pro-avatar-home.mov across all screen sizes */}
           <video
-            src="/home-bg.mp4"
+            src="/pro-avatar-home.mov"
             autoPlay
             muted
             loop
             playsInline
-            className="hidden md:block absolute inset-0 w-full h-full object-cover"
-          />
-
-          {/* Background Video - Mobile (9:16 Portrait) */}
-          <video
-            src="/home-bg-portrait.mp4"
-            autoPlay
-            muted
-            loop
-            playsInline
-            className="block md:hidden absolute inset-0 w-full h-full object-cover"
+            className="absolute inset-0 w-full h-full object-cover"
           />
 
           {/* Optional Overlay/Tint */}
           <div className="absolute inset-0 bg-black/10 group-hover:bg-black/0 transition-colors duration-500" />
 
           {/* Language Selector (Top Right) */}
-          <div className="absolute top-8 right-8 z-30" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="absolute top-8 right-8 z-30"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="relative">
               {/* Dropdown Trigger */}
               <button
                 onClick={() => setIsLanguageOpen(!isLanguageOpen)}
                 className="flex items-center gap-2 bg-black/40 backdrop-blur-md text-white border border-white/20 rounded-lg pl-4 pr-3 py-2 hover:bg-black/60 transition-all font-light shadow-xl text-sm md:text-base min-w-[140px] justify-between"
               >
-                <span>{languages.find(l => l.value === language)?.name}</span>
-                <ChevronDown className={`w-4 h-4 text-white/70 transition-transform duration-300 ${isLanguageOpen ? "rotate-180" : ""}`} />
+                <span>{languages.find((l) => l.value === language)?.name}</span>
+                <ChevronDown
+                  className={`w-4 h-4 text-white/70 transition-transform duration-300 ${isLanguageOpen ? "rotate-180" : ""}`}
+                />
               </button>
 
               {/* Custom Dropdown Menu */}
