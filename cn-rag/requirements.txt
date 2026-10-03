@@ -1,0 +1,9 @@
+pymupdf
+python-dotenv
+google-genai
+langchain
+langchain-community
+chromadb
+fastapi
+uvicorn[standard]
+pydantic

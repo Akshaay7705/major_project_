@@ -69,6 +69,57 @@ export async function POST(req: Request) {
       persona.context_id = CONTEXT_ID;
     }
 
+    // 3. Avatar ID resolution: UUID validation & automatic discovery fallback
+    let finalAvatarId = AVATAR_ID;
+    const isUuid = (str: string) =>
+      /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
+        str,
+      );
+
+    if (
+      !finalAvatarId ||
+      finalAvatarId === "YOUR_AVATAR_ID" ||
+      !isUuid(finalAvatarId)
+    ) {
+      console.log(
+        "DEBUG: Invalid or missing avatar_id UUID. Attempting to discover an available avatar...",
+      );
+      try {
+        const avatarsRes = await fetch(`${API_URL}/v1/avatars`, {
+          headers: { "X-API-KEY": API_KEY },
+        });
+        if (avatarsRes.ok) {
+          const avatarsData = await avatarsRes.json();
+          const activeAvatars = avatarsData?.data?.results?.filter(
+            (a: any) => a.status === "ACTIVE",
+          );
+          if (activeAvatars && activeAvatars.length > 0) {
+            finalAvatarId = activeAvatars[0].id;
+            console.log(
+              `DEBUG: Discovered and using active avatar: ${finalAvatarId} (${activeAvatars[0].name})`,
+            );
+
+            // Try to use the default voice if we don't have one configured
+            if (!persona.voice_id && activeAvatars[0].default_voice?.id) {
+              persona.voice_id = activeAvatars[0].default_voice.id;
+            }
+          }
+        } else {
+          console.error(
+            "DEBUG: Failed to fetch avatars list:",
+            await avatarsRes.text(),
+          );
+        }
+      } catch (err) {
+        console.error("DEBUG: Error discovering avatars:", err);
+      }
+    }
+
+    if (!finalAvatarId || !isUuid(finalAvatarId)) {
+      // Ultimate fallback if discovery fails
+      finalAvatarId = "e66d4380-fb12-4fa0-862a-4c5058afc783"; // Chandana
+    }
+
     const res = await fetch(`${API_URL}/v1/sessions/token`, {
       method: "POST",
       headers: {
@@ -77,62 +128,32 @@ export async function POST(req: Request) {
       },
       body: JSON.stringify({
         mode: "FULL",
-        avatar_id: AVATAR_ID,
+        avatar_id: finalAvatarId,
         avatar_persona: persona,
       }),
     });
+
     if (!res.ok) {
       const resp = await res.json().catch(() => ({}));
       console.error(
         "DEBUG: HeyGen API start-session error:",
-        JSON.stringify(resp),
+        JSON.stringify(resp, null, 2),
       );
+
       const errorMessage =
-        resp?.data?.[0]?.message ||
-        resp?.data?.message ||
-        resp?.message ||
         resp?.error ||
-        `Failed to retrieve session token (HTTP ${res.status})`;
+        resp?.message ||
+        resp?.data?.message ||
+        resp?.data?.[0]?.message ||
+        `HeyGen API Error: HTTP ${res.status}`;
 
-      // Smart fallback: If custom avatar_id or voice_id was not found, retry with default public Avatar ID
-      if (
-        errorMessage.toLowerCase().includes("avatar not found") ||
-        errorMessage.toLowerCase().includes("voice")
-      ) {
-        console.warn("DEBUG: Retrying with default public HeyGen avatar ID...");
-        const fallbackRes = await fetch(`${API_URL}/v1/sessions/token`, {
-          method: "POST",
-          headers: {
-            "X-API-KEY": API_KEY,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            mode: "FULL",
-            avatar_id: "dd73ea75-1218-4ef3-92ce-606d5f7fbc0a",
-            avatar_persona: {
-              language: language,
-            },
-          }),
-        });
-        if (fallbackRes.ok) {
-          const fallbackData = await fallbackRes.json();
-          return new Response(
-            JSON.stringify({
-              session_token: fallbackData.data.session_token,
-              session_id: fallbackData.data.session_id,
-            }),
-            {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            },
-          );
-        }
-      }
-
-      return new Response(JSON.stringify({ error: errorMessage }), {
-        status: res.status,
-        headers: { "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: errorMessage, details: resp }),
+        {
+          status: res.status, // Often 422 if invalid
+          headers: { "Content-Type": "application/json" },
+        },
+      );
     }
     const data = await res.json();
 

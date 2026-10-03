@@ -21,6 +21,13 @@ import {
   ChevronRight,
   Send,
 } from "lucide-react";
+import { RawVideoPipeline } from "../lib/rawVideoPipeline";
+import {
+  HologramCompositor,
+  CalibrationPanel,
+  DEFAULT_HOLOGRAM_CONFIG,
+  type HologramConfig,
+} from "./HologramCompositor";
 
 const SidebarButton: React.FC<{
   onClick: () => void;
@@ -72,12 +79,16 @@ const LiveAvatarSessionComponent: React.FC<{
   avatarTranscriptHandlerRef,
 }) => {
   const [showTranscript, setShowTranscript] = useState(true);
-  const [isOpen, setIsOpen] = useState(true); // Default sidebar open
+  const [isOpen, setIsOpen] = useState(true);
   const [showChatInput, setShowChatInput] = useState(false);
   const [chatMessages, setChatMessages] = useState<
     { sender: "User" | "Agent"; text: string }[]
   >([]);
   const [inputMessage, setInputMessage] = useState("");
+  const [hologramConfig, setHologramConfig] = useState<HologramConfig>(
+    DEFAULT_HOLOGRAM_CONFIG,
+  );
+  const [showCalibration, setShowCalibration] = useState(false);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   // Guard for session start
@@ -118,11 +129,102 @@ const LiveAvatarSessionComponent: React.FC<{
       isSessionStarting.current = false; // Reset guard
     }
   }, [sessionState, onSessionStopped]);
-
   useEffect(() => {
-    if (isStreamReady && videoRef.current) {
-      attachElement(videoRef.current);
-    }
+    if (!isStreamReady || !videoRef.current) return;
+
+    const video = videoRef.current;
+
+    // Attach HeyGen's MediaStream to the video element for local playback
+    attachElement(video);
+
+    let cancelled = false;
+    let reader: ReadableStreamDefaultReader<VideoFrame> | null = null;
+    const pipeline = new RawVideoPipeline();
+
+    const processVideo = async () => {
+      // Give the video element a moment to receive srcObject
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      if (cancelled) return;
+
+      const stream = video.srcObject as MediaStream | null;
+
+      if (!stream) {
+        console.error("No MediaStream found on video element");
+        return;
+      }
+
+      const tracks = stream.getVideoTracks();
+      if (tracks.length === 0) {
+        console.error("No video track found in MediaStream");
+        return;
+      }
+
+      const videoTrack = tracks[0];
+      if (!videoTrack) {
+        console.error("No video track found in MediaStream");
+        return;
+      }
+      console.log(
+        "[Video] Track:",
+        videoTrack.label,
+        "Settings:",
+        videoTrack.getSettings(),
+      );
+
+      // Check browser support for MediaStreamTrackProcessor
+      if (!("MediaStreamTrackProcessor" in window)) {
+        console.error(
+          "MediaStreamTrackProcessor is not supported in this browser",
+        );
+        return;
+      }
+
+      // Start C++ WebRTC DataChannel connection and signaling
+      pipeline.start();
+
+      const processor = new MediaStreamTrackProcessor({
+        track: videoTrack,
+      });
+
+      reader = processor.readable.getReader();
+
+      while (!cancelled && reader) {
+        let frame: VideoFrame | undefined;
+        try {
+          const result = await reader.read();
+          if (result.done || !result.value) {
+            break;
+          }
+          frame = result.value;
+
+          // Resize to 640x300 RGBA, packetize, and send over DataChannel
+          await pipeline.sendRawFrame(frame);
+        } catch (err) {
+          if (!cancelled) {
+            console.error("[WebRTC] Error processing frame loop:", err);
+          }
+          break;
+        } finally {
+          // REQUIREMENT 7: Always close VideoFrame to prevent memory leaks
+          if (frame) {
+            frame.close();
+          }
+        }
+      }
+    };
+
+    processVideo();
+
+    return () => {
+      cancelled = true;
+      pipeline.stop();
+
+      if (reader) {
+        reader.cancel().catch(() => {});
+        reader = null;
+      }
+    };
   }, [attachElement, isStreamReady]);
 
   useEffect(() => {
@@ -177,6 +279,8 @@ const LiveAvatarSessionComponent: React.FC<{
   useEffect(() => {
     const session = sessionRef.current;
     if (!session) return;
+
+    console.log(session);
 
     const handleAvatarTranscript = (event: any) => {
       // console.log("DEBUG: Avatar Transcript Event:", event);
@@ -317,9 +421,11 @@ const LiveAvatarSessionComponent: React.FC<{
             { sender: "Agent", text: prompt },
           ]);
           try {
-            const r = repeat(prompt);
-            if (r && typeof r.catch === "function") r.catch(() => {});
-          } catch (_) {}
+            await interrupt();
+            await repeat(prompt);
+          } catch (e) {
+            console.error("Repeat error:", e);
+          }
           return;
         }
 
@@ -334,9 +440,11 @@ const LiveAvatarSessionComponent: React.FC<{
               { sender: "Agent", text: prompt },
             ]);
             try {
-              const r = repeat(prompt);
-              if (r && typeof r.catch === "function") r.catch(() => {});
-            } catch (_) {}
+              await interrupt();
+              await repeat(prompt);
+            } catch (e) {
+              console.error("Repeat error:", e);
+            }
             return;
           }
 
@@ -348,9 +456,11 @@ const LiveAvatarSessionComponent: React.FC<{
             { sender: "Agent", text: bookingMsg },
           ]);
           try {
-            const r = repeat(bookingMsg);
-            if (r && typeof r.catch === "function") r.catch(() => {});
-          } catch (_) {}
+            await interrupt();
+            await repeat(bookingMsg);
+          } catch (e) {
+            console.error("Repeat error:", e);
+          }
 
           const schedRes = await fetch("/api/schedule-meeting", {
             method: "POST",
@@ -372,9 +482,11 @@ const LiveAvatarSessionComponent: React.FC<{
             { sender: "Agent", text: avatarResponse },
           ]);
           try {
-            const r = repeat(avatarResponse);
-            if (r && typeof r.catch === "function") r.catch(() => {});
-          } catch (_) {}
+            await interrupt();
+            await repeat(avatarResponse);
+          } catch (e) {
+            console.error("Repeat error:", e);
+          }
           return;
         }
 
@@ -388,9 +500,11 @@ const LiveAvatarSessionComponent: React.FC<{
             { sender: "Agent", text: prompt },
           ]);
           try {
-            const r = repeat(prompt);
-            if (r && typeof r.catch === "function") r.catch(() => {});
-          } catch (_) {}
+            await interrupt();
+            await repeat(prompt);
+          } catch (e) {
+            console.error("Repeat error:", e);
+          }
           return;
         }
         // ---- END MEETING FLOW ----
@@ -460,6 +574,7 @@ const LiveAvatarSessionComponent: React.FC<{
             "DEBUG: Calling repeat with:",
             agentResponse.substring(0, 50) + "...",
           );
+
           await repeat(agentResponse);
         }
       } catch (error) {
@@ -514,8 +629,8 @@ const LiveAvatarSessionComponent: React.FC<{
         const prompt = `Thank you, ${pendingMeetingName.current}! Could you please share your email address so I can send you the meeting invite?`;
         setChatMessages((prev) => [...prev, { sender: "Agent", text: prompt }]);
         try {
-          const r = repeat(prompt);
-          if (r && typeof r.catch === "function") r.catch(() => {});
+          await interrupt();
+          await repeat(prompt);
         } catch (_) {}
         return;
       }
@@ -531,9 +646,11 @@ const LiveAvatarSessionComponent: React.FC<{
             { sender: "Agent", text: prompt },
           ]);
           try {
-            const r = repeat(prompt);
-            if (r && typeof r.catch === "function") r.catch(() => {});
-          } catch (_) {}
+            await interrupt();
+            await repeat(prompt);
+          } catch (e) {
+            console.error("Repeat error:", e);
+          }
           return;
         }
 
@@ -545,8 +662,8 @@ const LiveAvatarSessionComponent: React.FC<{
           { sender: "Agent", text: bookingMsg },
         ]);
         try {
-          const r = repeat(bookingMsg);
-          if (r && typeof r.catch === "function") r.catch(() => {});
+          await interrupt();
+          await repeat(bookingMsg);
         } catch (_) {}
 
         const schedRes = await fetch("/api/schedule-meeting", {
@@ -569,8 +686,8 @@ const LiveAvatarSessionComponent: React.FC<{
           { sender: "Agent", text: avatarResponse },
         ]);
         try {
-          const r = repeat(avatarResponse);
-          if (r && typeof r.catch === "function") r.catch(() => {});
+          await interrupt();
+          await repeat(avatarResponse);
         } catch (_) {}
         return;
       }
@@ -581,8 +698,8 @@ const LiveAvatarSessionComponent: React.FC<{
           "Of course! I'd be happy to schedule a meeting with the NIE Mysuru Admissions Office for you. What is your full name?";
         setChatMessages((prev) => [...prev, { sender: "Agent", text: prompt }]);
         try {
-          const r = repeat(prompt);
-          if (r && typeof r.catch === "function") r.catch(() => {});
+          await interrupt();
+          await repeat(prompt);
         } catch (_) {}
         return;
       }
@@ -627,16 +744,18 @@ const LiveAvatarSessionComponent: React.FC<{
   };
 
   return (
-    <div className="relative w-screen h-screen bg-neutral-900 overflow-hidden">
-      {/* Video Container - Full Screen */}
-      <div className="absolute inset-0 w-full h-full">
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          className="w-full h-full object-cover"
-        />
-      </div>
+    <div className="relative w-screen h-screen bg-black overflow-hidden">
+      {/* Hidden video element – HeyGen attaches the MediaStream here */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className="absolute opacity-0 pointer-events-none w-0 h-0"
+      />
+
+      {/* Hologram 4-view compositor – replaces raw video display */}
+      <HologramCompositor videoRef={videoRef} config={hologramConfig} />
 
       {/* Connection Status Indicator */}
       <div className="absolute top-8 md:top-6 left-6 z-10 flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/20 backdrop-blur-md border border-white/10">
@@ -700,7 +819,25 @@ const LiveAvatarSessionComponent: React.FC<{
             icon={<MessageSquare className="w-4 h-4 md:w-6 md:h-6" />}
             label="Transcript"
           />
-          <div className="pt-3 md:pt-4 border-t border-white/10 mt-1 md:mt-2">
+          <div className="pt-3 md:pt-4 border-t border-white/10 mt-1 md:mt-2 flex flex-col gap-4">
+            <SidebarButton
+              onClick={() => setShowCalibration((s) => !s)}
+              active={showCalibration}
+              icon={
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="w-4 h-4 md:w-5 md:h-5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83" />
+                </svg>
+              }
+              label="Calibrate"
+            />
             <SidebarButton
               onClick={stopSession}
               variant="danger"
@@ -709,6 +846,15 @@ const LiveAvatarSessionComponent: React.FC<{
           </div>
         </div>
       </div>
+
+      {/* Calibration Panel */}
+      {showCalibration && (
+        <CalibrationPanel
+          config={hologramConfig}
+          onChange={setHologramConfig}
+          onClose={() => setShowCalibration(false)}
+        />
+      )}
 
       {/* Center Bottom Chat Toggle & Input */}
       <div className="absolute bottom-6 md:bottom-8 left-1/2 -translate-x-1/2 z-30 w-[calc(100vw-2rem)] md:w-full max-w-xl px-0 md:px-4 flex justify-center">

@@ -3,5 +3,6 @@
     {
       "mode": "auto"
     }
-  ]
+  ],
+  "cmake.sourceDirectory": "/Users/akshaaybs/Documents/Projects/3D-model-nie-/cpp-receiver"
 }

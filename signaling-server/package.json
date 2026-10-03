@@ -1,0 +1,13 @@
+{
+  "name": "raw-video-signaling-server",
+  "version": "1.0.0",
+  "description": "Minimal WebSocket signaling server for React <-> C++ WebRTC DataChannel",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}

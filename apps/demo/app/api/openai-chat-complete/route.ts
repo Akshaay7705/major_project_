@@ -1,6 +1,95 @@
-import { OPENAI_API_KEY } from "../secrets";
+import {
+  OPENAI_API_KEY,
+  GEMINI_API_KEY,
+  GEMINI_MODEL,
+  GROQ_API_KEY,
+  GROQ_MODEL,
+  LOCAL_LLM_URL,
+  LOCAL_LLM_MODEL,
+} from "../secrets";
 import fs from "fs";
 import path from "path";
+import Groq from "groq-sdk";
+
+const groq = new Groq({
+  apiKey: GROQ_API_KEY,
+});
+
+// ---------------------------------------------------------------------------
+// RAG API Integration
+// ---------------------------------------------------------------------------
+
+const RAG_API_URL = process.env.RAG_API_URL || "http://localhost:8100";
+
+interface RAGSourceChunk {
+  rank: number;
+  chunk_id: string;
+  text: string;
+  source: string;
+  start_page: number;
+  end_page: number;
+  similarity: number;
+  citation: string;
+}
+
+interface RAGRetrieveResponse {
+  query: string;
+  chunks: RAGSourceChunk[];
+  context_text: string;
+  latency_seconds: number;
+}
+
+/**
+ * Retrieve semantically relevant context from the CN-RAG vector database.
+ * Falls back to the local knowledge bank keyword search if the RAG API is unavailable.
+ */
+async function getRAGContext(
+  query: string,
+  topK: number = 5,
+): Promise<{ context: string; source: "rag" | "knowledge_bank" | "none" }> {
+  try {
+    const res = await fetch(`${RAG_API_URL}/retrieve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: query,
+        top_k: topK,
+        answer_type: "general",
+      }),
+      signal: AbortSignal.timeout(15000), // 15s timeout
+    });
+
+    if (res.ok) {
+      const data: RAGRetrieveResponse = await res.json();
+      if (data.context_text && data.context_text.trim().length > 0) {
+        console.log(
+          `✅ RAG retrieval: ${data.chunks.length} chunks in ${data.latency_seconds}s`,
+        );
+        return { context: data.context_text, source: "rag" };
+      }
+    } else {
+      console.warn(
+        `⚠️ RAG API returned ${res.status}, falling back to knowledge bank`,
+      );
+    }
+  } catch (error: any) {
+    console.warn(
+      `⚠️ RAG API unavailable (${error.message}), falling back to knowledge bank`,
+    );
+  }
+
+  // Fallback: local knowledge bank keyword search
+  const kbContext = searchKnowledgeBank(query);
+  if (kbContext && kbContext.trim().length > 0) {
+    return { context: kbContext, source: "knowledge_bank" };
+  }
+
+  return { context: "", source: "none" };
+}
+
+// ---------------------------------------------------------------------------
+// Legacy: Knowledge Bank (fallback when RAG API is unavailable)
+// ---------------------------------------------------------------------------
 
 // Function to load the knowledge bank
 function getKnowledgeBankContext() {
@@ -95,38 +184,13 @@ function searchKnowledgeBank(query: string): string {
     }
 
     if (bestItem && maxScore > 0) {
-      // Extract informative sentences (> 25 characters, actual descriptive content)
-      const sentences = bestItem.content
-        .split(/(?<=[.!?])\s+|\|/)
-        .map((s: string) => s.replace(/\s+/g, " ").trim())
-        .filter(
-          (s: string) =>
-            s.length > 25 &&
-            !s.toLowerCase().startsWith("home") &&
-            !s.toLowerCase().startsWith("copyright"),
-        );
-
-      const matchingSentences = sentences.filter((s: string) =>
-        queryTokens.some((t) => s.toLowerCase().includes(t)),
-      );
-
-      const chosenSentences =
-        matchingSentences.length >= 2
-          ? matchingSentences.slice(0, 3)
-          : matchingSentences.concat(sentences).slice(0, 3);
-
-      let cleanText = Array.from(new Set(chosenSentences))
-        .join(" ")
+      let cleanText = bestItem.content
         .replace(/https?:\/\/\S+/g, "")
         .replace(/\s+/g, " ")
         .trim();
-      if (cleanText.length < 50 && bestItem.content.length > 50) {
-        cleanText = bestItem.content
-          .substring(0, 450)
-          .replace(/https?:\/\/\S+/g, "")
-          .trim();
-      }
-      return cleanText.substring(0, 500);
+
+      // Return up to 4000 chars of the most relevant page
+      return cleanText.substring(0, 4000);
     }
   } catch (e) {
     console.error("Error searching knowledge bank:", e);
@@ -136,16 +200,35 @@ function searchKnowledgeBank(query: string): string {
 
 const KNOWLEDGE_BASE = getKnowledgeBankContext();
 
-const SYSTEM_PROMPT = `
+const NIE_SYSTEM_PROMPT = `
 You are NIE-Bot, the official virtual assistant for The National Institute of Engineering (NIE), Mysuru.
 
+
+
 STRICT OPERATING RULES:
-1. Exclusively NIE Mysuru Context: You MUST ONLY answer questions related to NIE Mysuru (admissions, courses, fees, cutoffs, hostels, placements, campus facilities, research, alumni, contact).
-2. NO Business or External Topics: DO NOT answer questions about external digital agencies, general business consulting, or unrelated companies.
-3. Detailed Answers: Provide complete, clear, and informative responses (2 to 4 sentences). Give full context including dates, departments, or details where applicable.
-4. Use Scraped Knowledge Base Exclusively:
-${KNOWLEDGE_BASE}
-*** END KNOWLEDGE BASE ***
+1. Exclusively NIE Mysuru Context: You MUST ONLY answer questions related to NIE Mysuru.
+2. NO Business or External Topics: DO NOT answer unrelated questions.
+3. Detailed Answers: Provide complete, clear, and informative responses in 2 to 4 sentences.
+4. Use ONLY the relevant information provided in the knowledge context or the core facts above.
+5. If the knowledge context does not contain the answer, clearly say that you do not have that information.
+
+Keep responses well-structured, clear, friendly, and natural for spoken voice output.
+`;
+
+const ACADEMIC_SYSTEM_PROMPT = `
+You are NIE-Bot, the intelligent academic assistant for The National Institute of Engineering (NIE), Mysuru.
+
+You serve two roles:
+1. **NIE Information Assistant**: Answer questions about NIE Mysuru — admissions, programs, facilities, faculty, events, etc.
+2. **Academic Study Assistant**: Answer academic questions related to subjects taught at NIE (such as Computer Networks, Data Structures, Operating Systems, etc.) using the provided knowledge context retrieved from textbooks and course materials.
+
+OPERATING RULES:
+1. If the question is about NIE Mysuru (admissions, campus, departments, etc.), answer using the NIE knowledge context.
+2. If the question is academic/technical (e.g., "What is the network layer?", "Explain TCP"), answer it thoroughly using the provided textbook context.
+3. Provide complete, clear, and informative responses in 2 to 5 sentences.
+4. Use ONLY the relevant information provided in the knowledge context.
+5. If the knowledge context does not contain the answer, clearly say that you do not have that information.
+6. When answering academic questions, cite the source (textbook/module name and page) if available in the context.
 
 Keep responses well-structured, clear, friendly, and natural for spoken voice output.
 `;
@@ -190,19 +273,42 @@ export async function POST(request: Request) {
     }
 
     message = sanitizeInput(message || "");
+    console.log(message);
+    if (!message) {
+      return new Response(JSON.stringify({ error: "message is required" }), {
+        status: 400,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+    }
 
-    console.log(`DEBUG: API received language: "${language}"`);
+    // ---------------------------------------------------------------------------
+    // Retrieve context: try RAG API first, fall back to knowledge bank
+    // ---------------------------------------------------------------------------
+    const { context: ragContext, source: contextSource } =
+      await getRAGContext(message);
+    console.log(
+      `📚 Context source: ${contextSource} (${ragContext.length} chars)`,
+    );
 
-    // Append language enforcement to the system prompt
-    const languageInstruction = language
-      ? `\n\nCRITICAL INSTRUCTION: The user has selected the language: "${language}". Regardless of the language the user speaks (even if they speak English), you MUST output your final response designated for the user ONLY in "${language}". Translate the information from the Knowledge Base into "${language}". Do NOT reply in English unless the selected language is explicitly "English".`
-      : "";
+    // Use the academic prompt when RAG provides textbook context,
+    // otherwise use the strict NIE-only prompt
+    const basePrompt =
+      contextSource === "rag" ? ACADEMIC_SYSTEM_PROMPT : NIE_SYSTEM_PROMPT;
 
-    const effectiveSystemPrompt = SYSTEM_PROMPT + languageInstruction;
+    const effectiveSystemPrompt = `
+    ${basePrompt}
+
+    RELEVANT KNOWLEDGE (retrieved via ${contextSource === "rag" ? "semantic vector search from textbooks" : "keyword search"}):
+    ${ragContext}
+    `;
+
     const finalSystemPrompt = system_prompt
       ? `${effectiveSystemPrompt}\n\nAdditional Instructions:\n${system_prompt}`
       : effectiveSystemPrompt;
 
+    console.log(finalSystemPrompt);
     if (!message) {
       return new Response(JSON.stringify({ error: "message is required" }), {
         status: 400,
@@ -210,58 +316,207 @@ export async function POST(request: Request) {
       });
     }
 
+    // 1. Prefer Gemini API if configured
     if (
-      !OPENAI_API_KEY ||
-      OPENAI_API_KEY === "YOUR_OPENAI_API_KEY" ||
-      OPENAI_API_KEY === "YOUR_API_KEY"
+      GEMINI_API_KEY &&
+      GEMINI_API_KEY !== "YOUR_GEMINI_API_KEY" &&
+      GEMINI_API_KEY !== "YOUR_API_KEY"
     ) {
-      const fallbackResponse = searchKnowledgeBank(message);
-      return new Response(JSON.stringify({ response: fallbackResponse }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      try {
+        const geminiModel = GEMINI_MODEL;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${GEMINI_API_KEY}`;
+        const userPrompt =
+          message +
+          (language ? `\n\n(Remember: Reply ONLY in ${language})` : "");
+
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: finalSystemPrompt }],
+            },
+            contents: [
+              {
+                role: "user",
+                parts: [{ text: userPrompt }],
+              },
+            ],
+          }),
+        });
+
+        if (!res.ok) {
+          const errorData = await res.text();
+          console.error("Gemini API error (will try fallback):", errorData);
+          // Don't return error — fall through to OpenAI/Groq fallback
+        } else {
+          const data = await res.json();
+          const response =
+            data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+
+          if (response) {
+            console.log(
+              `✅ LLM USED: Gemini (${GEMINI_MODEL}) — response length: ${response.length}`,
+            );
+            return new Response(JSON.stringify({ response }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+      } catch (geminiError) {
+        console.error("Error calling Gemini API:", geminiError);
+      }
     }
 
-    // Call OpenAI API
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: finalSystemPrompt },
-          {
-            role: "user",
-            content:
-              message +
-              (language ? `\n\n(Remember: Reply ONLY in ${language})` : ""),
-          },
-        ],
-      }),
-    });
+    // 2. Fallback to OpenAI if configured
+    if (
+      OPENAI_API_KEY &&
+      OPENAI_API_KEY !== "YOUR_OPENAI_API_KEY" &&
+      OPENAI_API_KEY !== "YOUR_API_KEY"
+    ) {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: finalSystemPrompt },
+            {
+              role: "user",
+              content:
+                message +
+                (language ? `\n\n(Remember: Reply ONLY in ${language})` : ""),
+            },
+          ],
+        }),
+      });
 
-    if (!res.ok) {
+      if (res.ok) {
+        const data = await res.json();
+        const response = data.choices[0]?.message?.content;
+        console.log(
+          `✅ LLM USED: OpenAI (${model}) — response length: ${response?.length || 0}`,
+        );
+        return new Response(JSON.stringify({ response }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       const errorData = await res.text();
       console.error("OpenAI API error:", errorData);
-      return new Response(
-        JSON.stringify({
-          error: "Failed to generate response",
-          details: errorData,
-        }),
-        {
-          status: res.status,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
     }
 
-    const data = await res.json();
-    const response = data.choices[0].message.content;
+    // 3. Fallback to Local LLM (e.g., Ollama) if configured
+    if (LOCAL_LLM_URL && LOCAL_LLM_URL !== "") {
+      try {
+        const userPrompt =
+          message +
+          (language ? `\n\n(Remember: Reply ONLY in ${language})` : "");
 
-    return new Response(JSON.stringify({ response }), {
+        const res = await fetch(LOCAL_LLM_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: LOCAL_LLM_MODEL,
+            messages: [
+              { role: "system", content: finalSystemPrompt },
+              { role: "user", content: userPrompt },
+            ],
+            stream: false,
+          }),
+        });
+
+        if (!res.ok) {
+          const errorData = await res.text();
+          console.error("Local LLM API error (will try fallback):", errorData);
+        } else {
+          const data = await res.json();
+          const response = data.choices?.[0]?.message?.content?.trim() || "";
+
+          if (response) {
+            console.log(
+              `✅ LLM USED: Local LLM (${LOCAL_LLM_MODEL}) — response length: ${response.length}`,
+            );
+            return new Response(JSON.stringify({ response }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+      } catch (localError) {
+        console.error("Error calling Local LLM:", localError);
+      }
+    }
+
+    // 4. Fallback to groq
+    if (
+      GROQ_API_KEY &&
+      GROQ_API_KEY !== "YOUR_GROQ_API_KEY" &&
+      GROQ_API_KEY !== "YOUR_API_KEY"
+    ) {
+      try {
+        const groqModel = GROQ_MODEL;
+
+        const url = "https://api.groq.com/openai/v1/chat/completions";
+
+        const userPrompt =
+          message +
+          (language ? `\n\n(Remember: Reply ONLY in ${language})` : "");
+
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${GROQ_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: groqModel,
+            messages: [
+              {
+                role: "system",
+                content: finalSystemPrompt,
+              },
+              {
+                role: "user",
+                content: userPrompt,
+              },
+            ],
+          }),
+        });
+
+        if (!res.ok) {
+          const errorData = await res.text();
+          console.error("Groq API error (will try fallback):", errorData);
+          // Don't return error — fall through to knowledge bank fallback
+        } else {
+          const data = await res.json();
+          const response = data.choices?.[0]?.message?.content?.trim() || "";
+
+          if (response) {
+            console.log(
+              `✅ LLM USED: Groq (${GROQ_MODEL}) — response length: ${response.length}`,
+            );
+            return new Response(JSON.stringify({ response }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+      } catch (groqError) {
+        console.error("Error calling Groq API:", groqError);
+      }
+    }
+
+    // 4. Fallback to local Knowledge Bank search
+    console.log(
+      `⚠️ LLM USED: Local Knowledge Bank fallback (all LLM providers failed or unconfigured)`,
+    );
+    const fallbackResponse = searchKnowledgeBank(message);
+    return new Response(JSON.stringify({ response: fallbackResponse }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });

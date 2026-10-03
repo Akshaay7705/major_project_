@@ -67,11 +67,19 @@ const LiveAvatarSessionComponent: React.FC<{
     }
   }, [sessionState, onSessionStopped]);
 
-  useEffect(() => {
-    if (isStreamReady && videoRef.current) {
-      attachElement(videoRef.current);
-    }
-  }, [attachElement, isStreamReady]);
+  // useEffect(() => {
+  //   if (!isStreamReady) return;
+
+  //   const videoElement = videoRef.current;
+
+  //   if (!videoElement) {
+  //     console.warn("Video element is not available");
+  //     return;
+  //   }
+
+  //   console.log("Attaching avatar stream to video element");
+  //   attachElement(videoElement);
+  // }, [isStreamReady, attachElement]);
 
   useEffect(() => {
     if (sessionState === SessionState.INACTIVE) {
