@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { LiveAvatarSession } from "./LiveAvatarSession";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Calendar } from "lucide-react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 
 export const LiveAvatarDemo = () => {
   const [sessionToken, setSessionToken] = useState("");
@@ -10,6 +12,20 @@ export const LiveAvatarDemo = () => {
   const [error, setError] = useState<string | null>(null);
   const [language, setLanguage] = useState("en");
   const [isLanguageOpen, setIsLanguageOpen] = useState(false);
+  // Pre-fill question from ?q= param (set by timetable page "Ask Avatar" links)
+  const searchParams = useSearchParams();
+  const pendingQuestionRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const q = searchParams.get("q");
+    if (q) {
+      pendingQuestionRef.current = q;
+      // Clean the URL without triggering a navigation
+      const url = new URL(window.location.href);
+      url.searchParams.delete("q");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, [searchParams]);
 
   const languages = [
     { name: "English", value: "en" },
@@ -85,6 +101,22 @@ export const LiveAvatarDemo = () => {
           {/* Optional Overlay/Tint */}
           <div className="absolute inset-0 bg-black/10 group-hover:bg-black/0 transition-colors duration-500" />
 
+          {/* Timetable & Faculty Mapping Button (Top Left) */}
+          <div
+            className="absolute top-8 left-8 z-30"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Link
+              href="/timetable"
+              className="flex items-center gap-2.5 bg-black/40 backdrop-blur-md text-white border border-white/20 rounded-xl px-4 py-2 hover:bg-black/60 hover:border-indigo-400/50 transition-all font-light shadow-xl text-sm md:text-base group"
+            >
+              <span className="p-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-400/30 group-hover:scale-110 transition-transform">
+                <Calendar className="w-4 h-4" />
+              </span>
+              <span className="font-medium">Class Timetable</span>
+            </Link>
+          </div>
+
           {/* Language Selector (Top Right) */}
           <div
             className="absolute top-8 right-8 z-30"
@@ -143,6 +175,7 @@ export const LiveAvatarDemo = () => {
           language={language}
           sessionAccessToken={sessionToken}
           onSessionStopped={onSessionStopped}
+          pendingQuestionRef={pendingQuestionRef}
         />
       )}
     </div>

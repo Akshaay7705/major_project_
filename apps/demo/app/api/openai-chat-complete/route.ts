@@ -10,6 +10,14 @@ import {
 import fs from "fs";
 import path from "path";
 import Groq from "groq-sdk";
+import {
+  chatCache,
+  CHAT_CACHE_TTL_MS,
+  chatCacheKey,
+  ragCache,
+  RAG_CACHE_TTL_MS,
+  ragCacheKey,
+} from "../../../lib/cache";
 
 const groq = new Groq({
   apiKey: GROQ_API_KEY,
@@ -40,251 +48,86 @@ interface RAGRetrieveResponse {
 }
 
 /**
- * Classify whether the query is about NIE (institutional) or academic (textbook).
- * Returns "nie", "academic", or "both" if it could be either.
- */
-function classifyQueryIntent(query: string): "nie" | "academic" | "both" {
-  const q = query.toLowerCase();
-
-  // NIE-specific keywords
-  const nieKeywords = [
-    "nie",
-    "mysuru",
-    "mysore",
-    "admission",
-    "admissions",
-    "placement",
-    "placements",
-    "fee",
-    "fees",
-    "hostel",
-    "campus",
-    "department",
-    "departments",
-    "club",
-    "clubs",
-    "fest",
-    "festival",
-    "sports",
-    "gym",
-    "library",
-    "canteen",
-    "faculty",
-    "principal",
-    "naac",
-    "nba",
-    "ranking",
-    "accreditation",
-    "seat",
-    "seats",
-    "cutoff",
-    "cut-off",
-    "cet",
-    "comedk",
-    "jee",
-    "quota",
-    "management quota",
-    "scholarship",
-    "recruit",
-    "recruiter",
-    "recruiters",
-    "package",
-    "lpa",
-    "salary",
-    "company",
-    "companies",
-    "hiring",
-    "career",
-    "apply",
-    "application",
-    "eligibility",
-    "branch",
-    "programme",
-    "mtech",
-    "mca",
-    "btech",
-    "intake",
-    "institute",
-    "college",
-    "founded",
-    "established",
-    "alumni",
-    "narayana murthy",
-    "infosys",
-    "autonomous",
-    "vtu",
-    "aicte",
-    "ugc",
-    "endowment",
-    "convocation",
-    "graduation day",
-    "training",
-    "internship",
-  ];
-
-  // Academic/textbook keywords (Computer Networks and general engineering)
-  const academicKeywords = [
-    "tcp",
-    "udp",
-    "ip",
-    "osi",
-    "protocol",
-    "routing",
-    "subnet",
-    "dns",
-    "dhcp",
-    "http",
-    "https",
-    "ftp",
-    "smtp",
-    "socket",
-    "packet",
-    "frame",
-    "ethernet",
-    "bandwidth",
-    "latency",
-    "throughput",
-    "congestion",
-    "arp",
-    "icmp",
-    "nat",
-    "firewall",
-    "vpn",
-    "ssl",
-    "tls",
-    "encryption",
-    "decryption",
-    "cipher",
-    "modulation",
-    "multiplexing",
-    "switching",
-    "topology",
-    "lan",
-    "wan",
-    "man",
-    "router",
-    "switch",
-    "hub",
-    "bridge",
-    "gateway",
-    "osi model",
-    "layer",
-    "transport layer",
-    "network layer",
-    "data link",
-    "physical layer",
-    "application layer",
-    "session layer",
-    "presentation layer",
-    "algorithm",
-    "data structure",
-    "binary tree",
-    "graph",
-    "sorting",
-    "operating system",
-    "process",
-    "thread",
-    "semaphore",
-    "deadlock",
-    "virtual memory",
-    "paging",
-    "scheduling",
-    "file system",
-    "database",
-    "sql",
-    "normalization",
-    "transaction",
-    "acid",
-    "explain",
-    "define",
-    "difference between",
-    "what is the",
-    "how does",
-  ];
-
-  let nieScore = 0;
-  let academicScore = 0;
-
-  for (const kw of nieKeywords) {
-    if (q.includes(kw)) nieScore++;
-  }
-  for (const kw of academicKeywords) {
-    if (q.includes(kw)) academicScore++;
-  }
-
-  if (nieScore > 0 && academicScore > 0) return "both";
-  if (nieScore > 0) return "nie";
-  if (academicScore > 0) return "academic";
-
-  // Default: if we can't tell, try both
-  return "both";
-}
-
-/**
- * Retrieve semantically relevant context from the CN-RAG vector database.
- * Falls back to the local knowledge bank keyword search if the RAG API is unavailable.
- * Routes queries intelligently: NIE questions → knowledge bank, academic → RAG, mixed → both.
+ * Retrieve semantically relevant context.
+ * - Prioritizes NIE institutional Knowledge Bank for questions about NIE, leadership, admissions, etc.
+ * - Uses CN-RAG vector database for academic Computer Networks textbook questions.
  */
 async function getRAGContext(
   query: string,
   topK: number = 5,
-): Promise<{
-  context: string;
-  source: "rag" | "knowledge_bank" | "both" | "none";
-}> {
-  const intent = classifyQueryIntent(query);
-  console.log(`🔍 Query intent classified as: ${intent}`);
+): Promise<{ context: string; source: "rag" | "knowledge_bank" | "none" }> {
+  // ── RAG cache lookup ──────────────────────────────────────────
+  const rKey = ragCacheKey(query);
+  const cachedCtx = ragCache.get(rKey);
+  if (cachedCtx !== undefined) {
+    console.log(`⚡ RAG cache HIT for: "${query.substring(0, 60)}"`);
+    // Determine original source from cached prefix tag
+    const source = cachedCtx.startsWith("[KB]") ? "knowledge_bank" : "rag";
+    const ctx = cachedCtx.startsWith("[KB]")
+      ? cachedCtx.slice(4)
+      : cachedCtx.startsWith("[RAG]")
+        ? cachedCtx.slice(5)
+        : cachedCtx;
+    return { context: ctx, source };
+  }
 
-  let ragContext = "";
-  let kbContext = "";
+  // 1. Search NIE institutional Knowledge Bank
+  const kbResult = searchKnowledgeBank(query);
 
-  // Only call RAG API for academic or mixed queries
-  if (intent === "academic" || intent === "both") {
-    try {
-      const res = await fetch(`${RAG_API_URL}/retrieve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query: query,
-          top_k: topK,
-          answer_type: "general",
-        }),
-        signal: AbortSignal.timeout(15000), // 15s timeout
-      });
+  const isInstitutionalQuery =
+    kbResult.topScore >= 1.2 ||
+    /\b(nie|mysuru|mysore|dean|deans|principal|vice\s*principal|iqac|admission|admissions|fee|fees|placement|placements|hostel|scholarship|ranking|nirf|naac|nba|campus|library|sports|gym|canteen|registrar|controller|coe|founder|history|governing|management\s*quota|comedk|cet)\b/i.test(
+      query,
+    );
 
-      if (res.ok) {
-        const data: RAGRetrieveResponse = await res.json();
-        if (data.context_text && data.context_text.trim().length > 0) {
-          console.log(
-            `✅ RAG retrieval: ${data.chunks.length} chunks in ${data.latency_seconds}s`,
-          );
-          ragContext = data.context_text;
-        }
-      } else {
-        console.warn(`⚠️ RAG API returned ${res.status}`);
+  if (isInstitutionalQuery && kbResult.context.trim().length > 0) {
+    console.log(
+      `🏛️ Knowledge Bank match (score: ${kbResult.topScore.toFixed(2)}) for institutional query: "${query}"`,
+    );
+    ragCache.set(rKey, `[KB]${kbResult.context}`, RAG_CACHE_TTL_MS);
+    return { context: kbResult.context, source: "knowledge_bank" };
+  }
+
+  // 2. Query CN-RAG vector database for academic/technical questions
+  try {
+    const res = await fetch(`${RAG_API_URL}/retrieve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: query,
+        top_k: topK,
+        answer_type: "general",
+      }),
+      signal: AbortSignal.timeout(10000), // 10s timeout
+    });
+
+    if (res.ok) {
+      const data: RAGRetrieveResponse = await res.json();
+      if (data.context_text && data.context_text.trim().length > 0) {
+        console.log(
+          `✅ RAG retrieval: ${data.chunks.length} chunks in ${data.latency_seconds}s`,
+        );
+        ragCache.set(rKey, `[RAG]${data.context_text}`, RAG_CACHE_TTL_MS);
+        return { context: data.context_text, source: "rag" };
       }
-    } catch (error: any) {
-      console.warn(`⚠️ RAG API unavailable (${error.message})`);
+    } else {
+      console.warn(
+        `⚠️ RAG API returned ${res.status}, checking knowledge bank fallback`,
+      );
     }
+  } catch (error: any) {
+    console.warn(
+      `⚠️ RAG API unavailable (${error.message}), checking knowledge bank fallback`,
+    );
   }
 
-  // Use knowledge bank for NIE or mixed queries, or as fallback
-  if (intent === "nie" || intent === "both" || !ragContext) {
-    kbContext = searchKnowledgeBank(query);
+  // 3. Fallback to knowledge bank if RAG has nothing
+  if (kbResult.context.trim().length > 0) {
+    ragCache.set(rKey, `[KB]${kbResult.context}`, RAG_CACHE_TTL_MS);
+    return { context: kbResult.context, source: "knowledge_bank" };
   }
 
-  // Combine contexts based on what we got
-  if (ragContext && kbContext && intent === "both") {
-    const combined = `--- NIE INSTITUTIONAL INFORMATION ---\n${kbContext}\n\n--- ACADEMIC/TEXTBOOK INFORMATION ---\n${ragContext}`;
-    return { context: combined, source: "both" };
-  }
-  if (kbContext && (intent === "nie" || !ragContext)) {
-    return { context: kbContext, source: "knowledge_bank" };
-  }
-  if (ragContext) {
-    return { context: ragContext, source: "rag" };
-  }
-
+  ragCache.set(rKey, "", RAG_CACHE_TTL_MS);
   return { context: "", source: "none" };
 }
 
@@ -323,11 +166,18 @@ function getKnowledgeBankContext() {
   }
 }
 
-function searchKnowledgeBank(query: string): string {
+function searchKnowledgeBank(query: string): {
+  context: string;
+  topScore: number;
+} {
   try {
     const potentialPaths = [
       path.join(process.cwd(), "../../knowledge_bank.json"),
       path.join(process.cwd(), "knowledge_bank.json"),
+      path.join(
+        process.cwd(),
+        "app/api/openai-chat-complete/knowledge_bank.json",
+      ),
     ];
     let items: any[] = [];
     for (const filePath of potentialPaths) {
@@ -338,7 +188,11 @@ function searchKnowledgeBank(query: string): string {
     }
 
     if (!items.length) {
-      return "The National Institute of Engineering (NIE), Mysuru, established in 1946, offers UG, PG, and Ph.D. engineering programs. Visit https://nie.ac.in for details.";
+      return {
+        context:
+          "The National Institute of Engineering (NIE), Mysuru, established in 1946, offers UG, PG, and Ph.D. engineering programs. Visit https://nie.ac.in for details.",
+        topScore: 0,
+      };
     }
 
     const STOP_WORDS = new Set([
@@ -430,6 +284,19 @@ function searchKnowledgeBank(query: string): string {
       "let",
       "make",
       "made",
+      "is",
+      "of",
+      "in",
+      "at",
+      "on",
+      "by",
+      "an",
+      "as",
+      "be",
+      "it",
+      "or",
+      "to",
+      "a",
     ]);
 
     // Category keywords: boost pages whose category matches the query intent
@@ -526,6 +393,17 @@ function searchKnowledgeBank(query: string): string {
         "nba",
         "ranking",
         "accreditation",
+        "dean",
+        "deans",
+        "director",
+        "iqac",
+        "chairperson",
+        "secretary",
+        "coe",
+        "registrar",
+        "administration",
+        "leadership",
+        "office",
       ],
       Home: [],
     };
@@ -537,11 +415,15 @@ function searchKnowledgeBank(query: string): string {
       .filter((t) => t.length > 1 && !STOP_WORDS.has(t));
 
     if (!queryTokens.length) {
-      // If the query is all stop-words, return a generic response
-      return "The National Institute of Engineering (NIE), Mysuru, established in 1946, is a premier autonomous institution. Visit https://nie.ac.in for details.";
+      return {
+        context:
+          "The National Institute of Engineering (NIE), Mysuru, established in 1946, is a premier autonomous institution. Visit https://nie.ac.in for details.",
+        topScore: 0,
+      };
     }
 
-    // Count how many pages contain each token (for IDF-like weighting)
+    const N = items.length;
+    // Count how many pages contain each token (for BM25 IDF)
     const tokenDocFreq: Record<string, number> = {};
     for (const token of queryTokens) {
       const wordRegex = new RegExp(`\\b${token}\\b`, "i");
@@ -553,63 +435,41 @@ function searchKnowledgeBank(query: string): string {
       tokenDocFreq[token] = count || 1;
     }
 
-    // Score each knowledge bank page
+    // Score each knowledge bank page using BM25 IDF
     const scored: { item: any; score: number }[] = [];
 
     for (const item of items) {
-      // Include table data in searchable text
-      let tableText = "";
-      if (item.tables && Array.isArray(item.tables)) {
-        for (const table of item.tables) {
-          for (const row of table.rows || []) {
-            tableText += " " + Object.values(row).join(" ");
-          }
-        }
-      }
-
       const text =
-        `${item.title || ""} ${item.content || ""} ${item.category || ""} ${tableText}`.toLowerCase();
+        `${item.title || ""} ${item.content || ""} ${item.category || ""}`.toLowerCase();
       let score = 0;
 
-      // Multi-word phrase matching: check if the full query (minus stop-words) appears as a phrase
-      const phraseQuery = queryTokens.join(" ");
-      if (phraseQuery.length > 3 && text.includes(phraseQuery)) {
-        score += 10; // big boost for exact phrase match
-      }
-      // Also check 2-word sliding window phrases
-      for (let i = 0; i < queryTokens.length - 1; i++) {
-        const bigram = `${queryTokens[i]} ${queryTokens[i + 1]}`;
-        if (text.includes(bigram)) {
-          score += 5; // significant boost for bigram match
-        }
-      }
-
       for (const token of queryTokens) {
-        // Use word-boundary regex for accurate matching
         const wordRegex = new RegExp(`\\b${token}\\b`, "g");
         const matches = text.match(wordRegex);
         if (matches) {
-          // IDF-like weight: tokens appearing in fewer pages are more important
-          const idf = Math.log(items.length / tokenDocFreq[token]) + 1;
-          // Count occurrences (TF), but cap at 5 to avoid long pages dominating
+          const freq = tokenDocFreq[token] || 1;
+          const idf = Math.max(
+            0.05,
+            Math.log((N - freq + 0.5) / (freq + 0.5) + 1),
+          );
           const tf = Math.min(matches.length, 5);
           score += tf * idf;
         }
       }
 
-      // Category boost: if query tokens match a category's keywords, boost that page
+      // Category boost
       const itemCategory = item.category || "";
       for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
         if (itemCategory === category) {
           for (const token of queryTokens) {
             if (keywords.includes(token)) {
-              score += 3; // significant boost for category match
+              score += 2;
             }
           }
         }
       }
 
-      // Title match boost: tokens in the title are more relevant
+      // Title match boost
       const titleText = (item.title || "").toLowerCase();
       for (const token of queryTokens) {
         const titleRegex = new RegExp(`\\b${token}\\b`, "g");
@@ -623,15 +483,19 @@ function searchKnowledgeBank(query: string): string {
       }
     }
 
-    // Sort by score descending and take top 3 results
     scored.sort((a, b) => b.score - a.score);
     const topResults = scored.slice(0, 3);
+    const topScore = topResults[0]?.score ?? 0;
 
     if (!topResults.length) {
-      return "The National Institute of Engineering (NIE), Mysuru, established in 1946, is a premier autonomous institution in Karnataka. NIE offers undergraduate, postgraduate, and research programs across Civil, Mechanical, Electrical, Computer Science, and Electronics engineering departments.";
+      return {
+        context:
+          "The National Institute of Engineering (NIE), Mysuru, established in 1946, is a premier autonomous institution in Karnataka. NIE offers undergraduate, postgraduate, and research programs across Civil, Mechanical, Electrical, Computer Science, and Electronics engineering departments.",
+        topScore: 0,
+      };
     }
 
-    // Build context from top results, including table data
+    // Build context from top results, including structured table data
     const contextParts: string[] = [];
     let totalLength = 0;
     const MAX_CONTEXT_LENGTH = 8000;
@@ -644,7 +508,6 @@ function searchKnowledgeBank(query: string): string {
         part += `Category: ${item.category}\n`;
       }
 
-      // Clean and add main content
       let cleanContent = (item.content || "")
         .replace(/https?:\/\/\S+/g, "")
         .replace(/\s+/g, " ")
@@ -659,7 +522,6 @@ function searchKnowledgeBank(query: string): string {
       }
       part += cleanContent;
 
-      // Include structured table data if available
       if (item.tables && Array.isArray(item.tables)) {
         for (const table of item.tables) {
           if (totalLength + part.length > MAX_CONTEXT_LENGTH) break;
@@ -679,11 +541,18 @@ function searchKnowledgeBank(query: string): string {
       totalLength += part.length;
     }
 
-    return contextParts.join("\n\n---\n\n");
+    return {
+      context: contextParts.join("\n\n---\n\n"),
+      topScore,
+    };
   } catch (e) {
     console.error("Error searching knowledge bank:", e);
   }
-  return "The National Institute of Engineering (NIE), Mysuru, established in 1946, is a premier autonomous institution in Karnataka. NIE offers undergraduate, postgraduate, and research programs across Civil, Mechanical, Electrical, Computer Science, and Electronics engineering departments.";
+  return {
+    context:
+      "The National Institute of Engineering (NIE), Mysuru, established in 1946, is a premier autonomous institution in Karnataka. NIE offers undergraduate, postgraduate, and research programs across Civil, Mechanical, Electrical, Computer Science, and Electronics engineering departments.",
+    topScore: 0,
+  };
 }
 
 const KNOWLEDGE_BASE = getKnowledgeBankContext();
@@ -701,6 +570,27 @@ STRICT OPERATING RULES:
 5. If the knowledge context does not contain the answer, clearly say that you do not have that information.
 
 Keep responses well-structured, clear, friendly, and natural for spoken voice output.
+`;
+
+import { buildTimetablePromptContext } from "../../../lib/timetable/store";
+
+const TIMETABLE_SYSTEM_PROMPT = `
+You are NIE-Bot, the official virtual assistant for The National Institute of Engineering (NIE), Mysuru.
+
+You assist students, faculty, and guests with faculty locations, class schedules, and the college timetable.
+
+OPERATING RULES FOR TIMETABLES & TEACHERS:
+1. Use the authoritative timetable and faculty mapping data provided below.
+2. When asked at what time a teacher will be in which class, or where they are at a specific time:
+   - Understand time ranges: periods span start to end times (e.g. "09:00 AM to 10:00 AM" covers 09:30 AM). If the requested time falls within a period, confirm that the teacher is taking that class!
+   - Clearly state:
+     * The teacher's full name
+     * The subject taught
+     * The exact day and period (e.g. "Tuesday from 9:00 AM to 10:00 AM")
+     * The class / section (e.g. "5th Semester CSE Section A")
+     * The classroom or laboratory venue (e.g. "Room 101" or "CS Lab-1").
+3. If asked about a teacher's current location or "where is the teacher right now", use the current Mysore/IST time and day provided in the timetable context to state whether they are currently teaching a class or when their next scheduled class is.
+4. Keep answers concise, accurate, friendly, and natural for spoken voice output (2 to 4 sentences). Avoid markdown syntax like asterisks, bullet dots, or hashtags.
 `;
 
 const ACADEMIC_SYSTEM_PROMPT = `
@@ -742,7 +632,18 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    let { message, model = "gpt-4o-mini", system_prompt, language } = body;
+    let {
+      message,
+      model = "gpt-4o-mini",
+      system_prompt,
+      language,
+      clearCache,
+    } = body;
+
+    if (clearCache) {
+      chatCache.clear();
+      ragCache.clear();
+    }
 
     // 2. Security: Input Validation & Sanitization
     if (language && !isValidLanguage(language)) {
@@ -772,6 +673,33 @@ export async function POST(request: Request) {
     }
 
     // ---------------------------------------------------------------------------
+    // Retrieve Timetable & Teacher Schedule Context
+    // ---------------------------------------------------------------------------
+    const { context: timetableContext, isRelevant: isTimetableQuery } =
+      buildTimetablePromptContext(message);
+    if (isTimetableQuery) {
+      console.log(`📅 Timetable context activated for query: "${message}"`);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Chat response cache (skip for timetable / time-sensitive queries)
+    // ---------------------------------------------------------------------------
+    const cKey = chatCacheKey(message, language || "en");
+    if (!isTimetableQuery) {
+      const cachedReply = chatCache.get(cKey);
+      if (cachedReply) {
+        console.log(`⚡ Chat cache HIT for: "${message.substring(0, 60)}"`);
+        return new Response(
+          JSON.stringify({ response: cachedReply, cached: true }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json", "X-Cache": "HIT" },
+          },
+        );
+      }
+    }
+
+    // ---------------------------------------------------------------------------
     // Retrieve context: try RAG API first, fall back to knowledge bank
     // ---------------------------------------------------------------------------
     const { context: ragContext, source: contextSource } =
@@ -780,24 +708,26 @@ export async function POST(request: Request) {
       `📚 Context source: ${contextSource} (${ragContext.length} chars)`,
     );
 
-    // Use the academic prompt when RAG provides textbook context,
-    // otherwise use the strict NIE-only prompt
-    const basePrompt =
-      contextSource === "rag" || contextSource === "both"
-        ? ACADEMIC_SYSTEM_PROMPT
-        : NIE_SYSTEM_PROMPT;
+    // Select base system prompt:
+    // Timetable prompt takes precedence if the user asks about teachers, schedules, or classes
+    let basePrompt = NIE_SYSTEM_PROMPT;
+    if (isTimetableQuery) {
+      basePrompt = TIMETABLE_SYSTEM_PROMPT;
+    } else if (contextSource === "rag") {
+      basePrompt = ACADEMIC_SYSTEM_PROMPT;
+    }
 
-    const contextLabel =
-      contextSource === "rag"
-        ? "semantic vector search from textbooks"
-        : contextSource === "both"
-          ? "NIE website knowledge bank + textbook vector search"
-          : "NIE website knowledge bank keyword search";
+    const effectiveSystemPrompt = isTimetableQuery
+      ? `${TIMETABLE_SYSTEM_PROMPT}
 
-    const effectiveSystemPrompt = `
+AUTHORITATIVE TIMETABLE & TEACHER SCHEDULE DATA:
+${timetableContext}`
+      : `
     ${basePrompt}
 
-    RELEVANT KNOWLEDGE (retrieved via ${contextLabel}):
+    ${timetableContext ? `\nAUTHORITATIVE TIMETABLE & TEACHER SCHEDULE DATA:\n${timetableContext}\n` : ""}
+
+    RELEVANT KNOWLEDGE (retrieved via ${contextSource === "rag" ? "semantic vector search from textbooks" : "keyword search"}):
     ${ragContext}
     `;
 
@@ -829,6 +759,7 @@ export async function POST(request: Request) {
         const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(12000), // 12s timeout to prevent hanging
           body: JSON.stringify({
             systemInstruction: {
               parts: [{ text: finalSystemPrompt }],
@@ -855,9 +786,16 @@ export async function POST(request: Request) {
             console.log(
               `✅ LLM USED: Gemini (${GEMINI_MODEL}) — response length: ${response.length}`,
             );
+            // Cache Gemini response (skip timetable queries)
+            if (!isTimetableQuery) {
+              chatCache.set(cKey, response, CHAT_CACHE_TTL_MS);
+            }
             return new Response(JSON.stringify({ response }), {
               status: 200,
-              headers: { "Content-Type": "application/json" },
+              headers: {
+                "Content-Type": "application/json",
+                "X-Cache": "MISS",
+              },
             });
           }
         }
@@ -898,9 +836,13 @@ export async function POST(request: Request) {
         console.log(
           `✅ LLM USED: OpenAI (${model}) — response length: ${response?.length || 0}`,
         );
+        // Cache OpenAI response (skip timetable queries)
+        if (!isTimetableQuery && response) {
+          chatCache.set(cKey, response, CHAT_CACHE_TTL_MS);
+        }
         return new Response(JSON.stringify({ response }), {
           status: 200,
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-Cache": "MISS" },
         });
       }
       const errorData = await res.text();
@@ -908,46 +850,46 @@ export async function POST(request: Request) {
     }
 
     // 3. Fallback to Local LLM (e.g., Ollama) if configured
-    if (LOCAL_LLM_URL && LOCAL_LLM_URL !== "") {
-      try {
-        const userPrompt =
-          message +
-          (language ? `\n\n(Remember: Reply ONLY in ${language})` : "");
+    // if (LOCAL_LLM_URL && LOCAL_LLM_URL !== "") {
+    //   try {
+    //     const userPrompt =
+    //       message +
+    //       (language ? `\n\n(Remember: Reply ONLY in ${language})` : "");
 
-        const res = await fetch(LOCAL_LLM_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: LOCAL_LLM_MODEL,
-            messages: [
-              { role: "system", content: finalSystemPrompt },
-              { role: "user", content: userPrompt },
-            ],
-            stream: false,
-          }),
-        });
+    //     const res = await fetch(LOCAL_LLM_URL, {
+    //       method: "POST",
+    //       headers: { "Content-Type": "application/json" },
+    //       body: JSON.stringify({
+    //         model: LOCAL_LLM_MODEL,
+    //         messages: [
+    //           { role: "system", content: finalSystemPrompt },
+    //           { role: "user", content: userPrompt },
+    //         ],
+    //         stream: false,
+    //       }),
+    //     });
 
-        if (!res.ok) {
-          const errorData = await res.text();
-          console.error("Local LLM API error (will try fallback):", errorData);
-        } else {
-          const data = await res.json();
-          const response = data.choices?.[0]?.message?.content?.trim() || "";
+    //     if (!res.ok) {
+    //       const errorData = await res.text();
+    //       console.error("Local LLM API error (will try fallback):", errorData);
+    //     } else {
+    //       const data = await res.json();
+    //       const response = data.choices?.[0]?.message?.content?.trim() || "";
 
-          if (response) {
-            console.log(
-              `✅ LLM USED: Local LLM (${LOCAL_LLM_MODEL}) — response length: ${response.length}`,
-            );
-            return new Response(JSON.stringify({ response }), {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            });
-          }
-        }
-      } catch (localError) {
-        console.error("Error calling Local LLM:", localError);
-      }
-    }
+    //       if (response) {
+    //         console.log(
+    //           `✅ LLM USED: Local LLM (${LOCAL_LLM_MODEL}) — response length: ${response.length}`,
+    //         );
+    //         return new Response(JSON.stringify({ response }), {
+    //           status: 200,
+    //           headers: { "Content-Type": "application/json" },
+    //         });
+    //       }
+    //     }
+    //   } catch (localError) {
+    //     console.error("Error calling Local LLM:", localError);
+    //   }
+    // }
 
     // 4. Fallback to groq
     if (
@@ -997,9 +939,16 @@ export async function POST(request: Request) {
             console.log(
               `✅ LLM USED: Groq (${GROQ_MODEL}) — response length: ${response.length}`,
             );
+            // Cache Groq response (skip timetable queries)
+            if (!isTimetableQuery) {
+              chatCache.set(cKey, response, CHAT_CACHE_TTL_MS);
+            }
             return new Response(JSON.stringify({ response }), {
               status: 200,
-              headers: { "Content-Type": "application/json" },
+              headers: {
+                "Content-Type": "application/json",
+                "X-Cache": "MISS",
+              },
             });
           }
         }
@@ -1012,7 +961,7 @@ export async function POST(request: Request) {
     console.log(
       `⚠️ LLM USED: Local Knowledge Bank fallback (all LLM providers failed or unconfigured)`,
     );
-    const fallbackResponse = searchKnowledgeBank(message);
+    const fallbackResponse = searchKnowledgeBank(message).context;
     return new Response(JSON.stringify({ response: fallbackResponse }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -1027,4 +976,26 @@ export async function POST(request: Request) {
       },
     );
   }
+}
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  if (url.searchParams.get("clearCache") === "true") {
+    chatCache.clear();
+    ragCache.clear();
+    return new Response(JSON.stringify({ status: "cleared" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  return new Response(
+    JSON.stringify({
+      chatCacheSize: chatCache.size,
+      ragCacheSize: ragCache.size,
+    }),
+    {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    },
+  );
 }

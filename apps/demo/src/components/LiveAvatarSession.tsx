@@ -20,7 +20,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Send,
+  Calendar,
 } from "lucide-react";
+import Link from "next/link";
 import { RawVideoPipeline } from "../lib/rawVideoPipeline";
 import {
   HologramCompositor,
@@ -28,6 +30,7 @@ import {
   DEFAULT_HOLOGRAM_CONFIG,
   type HologramConfig,
 } from "./HologramCompositor";
+import { TimetableModal } from "./TimetableModal";
 
 const SidebarButton: React.FC<{
   onClick: () => void;
@@ -71,12 +74,14 @@ const LiveAvatarSessionComponent: React.FC<{
   avatarTranscriptHandlerRef?: React.MutableRefObject<
     ((text: string) => void) | null
   >;
+  pendingQuestionRef?: React.MutableRefObject<string | null>;
 }> = ({
   mode,
   language,
   onSessionStopped,
   voiceCommandHandlerRef,
   avatarTranscriptHandlerRef,
+  pendingQuestionRef,
 }) => {
   const [showTranscript, setShowTranscript] = useState(true);
   const [isOpen, setIsOpen] = useState(true);
@@ -274,6 +279,42 @@ const LiveAvatarSessionComponent: React.FC<{
       isGreetingSpoken.current = false;
     }
   }, [sessionState, interrupt, repeat]);
+
+  // Fire pending question from timetable page once session is connected
+  useEffect(() => {
+    if (
+      sessionState === SessionState.CONNECTED &&
+      pendingQuestionRef?.current
+    ) {
+      const q = pendingQuestionRef.current;
+      pendingQuestionRef.current = null;
+      // Small delay so the greeting settles first
+      const t = setTimeout(() => {
+        setShowChatInput(true);
+        setChatMessages((prev) => [...prev, { sender: "User", text: q }]);
+        fetch("/api/openai-chat-complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: q }),
+        })
+          .then((r) => r.json())
+          .then((data) => {
+            const agentResponse = data.response;
+            if (!agentResponse) return;
+            setChatMessages((prev) => [
+              ...prev,
+              { sender: "Agent", text: agentResponse },
+            ]);
+            try {
+              const res = repeat(agentResponse);
+              if (res && typeof res.catch === "function") res.catch(() => {});
+            } catch (_) {}
+          })
+          .catch(console.error);
+      }, 2500);
+      return () => clearTimeout(t);
+    }
+  }, [sessionState, pendingQuestionRef, repeat]);
 
   // Capture all avatar speech (including greetings)
   useEffect(() => {
@@ -819,6 +860,15 @@ const LiveAvatarSessionComponent: React.FC<{
             icon={<MessageSquare className="w-4 h-4 md:w-6 md:h-6" />}
             label="Transcript"
           />
+          {/* Calendar button → navigates to /timetable page */}
+          <Link
+            href="/timetable"
+            className="group flex items-center justify-center gap-3 relative"
+          >
+            <span className="flex items-center justify-center w-9 h-9 md:w-14 md:h-14 rounded-full backdrop-blur-md transition-all duration-200 shadow-lg border bg-black/20 border-white/10 text-white/80 hover:bg-black/40 hover:text-white cursor-pointer">
+              <Calendar className="w-4 h-4 md:w-6 md:h-6" />
+            </span>
+          </Link>
           <div className="pt-3 md:pt-4 border-t border-white/10 mt-1 md:mt-2 flex flex-col gap-4">
             <SidebarButton
               onClick={() => setShowCalibration((s) => !s)}
@@ -957,7 +1007,14 @@ export const LiveAvatarSession: React.FC<{
   sessionAccessToken: string;
   language: string;
   onSessionStopped: () => void;
-}> = ({ mode, sessionAccessToken, language, onSessionStopped }) => {
+  pendingQuestionRef?: React.MutableRefObject<string | null>;
+}> = ({
+  mode,
+  sessionAccessToken,
+  language,
+  onSessionStopped,
+  pendingQuestionRef,
+}) => {
   const voiceHandlerRef = useRef<((text: string) => void) | null>(null);
   const avatarTranscriptRef = useRef<((text: string) => void) | null>(null);
 
@@ -981,6 +1038,7 @@ export const LiveAvatarSession: React.FC<{
         onSessionStopped={onSessionStopped}
         voiceCommandHandlerRef={voiceHandlerRef}
         avatarTranscriptHandlerRef={avatarTranscriptRef}
+        pendingQuestionRef={pendingQuestionRef}
       />
     </LiveAvatarContextProvider>
   );
