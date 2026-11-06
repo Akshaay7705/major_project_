@@ -1,3 +1,4 @@
+import { error } from "console";
 import { NextRequest } from "next/server";
 
 // Google Calendar + Meet Meeting Scheduler API
@@ -24,8 +25,10 @@ async function getAccessToken(): Promise<string> {
 
   const data = await res.json();
   if (!res.ok || !data.access_token) {
+    console.error(error);
     throw new Error(`Failed to get access token: ${JSON.stringify(data)}`);
   }
+  console.log(data.access_token);
   return data.access_token;
 }
 
@@ -126,11 +129,25 @@ export async function POST(request: NextRequest) {
       return "mock_token";
     });
 
-    let meetLink = "https://meet.google.com/mock-link-123";
+    function getRandomString(len: number) {
+      const chars =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij-_klmnopqrstuvwxyz0123456789";
+      let result = "";
+
+      for (let i = 0; i < len; i++) {
+        const randomIndex = Math.floor(Math.random() * chars.length);
+        result += chars.charAt(randomIndex);
+      }
+
+      return result;
+    }
+
+    let meetLink = "https://meet.google.com/" + getRandomString(16);
     let eventId = `nie-mock-${Date.now()}`;
     let startTime = new Date();
     startTime.setDate(startTime.getDate() + 1);
-    startTime.setHours(10, 0, 0, 0);
+    const now = new Date();
+    startTime.setHours(now.getHours() + 1, 0, 0, 0);
 
     if (accessToken !== "mock_token") {
       const calendarEvent = await createCalendarMeeting(accessToken, body);
